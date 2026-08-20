@@ -17,6 +17,7 @@ from .windows import ActiveWindow
 
 
 LOGGER = logging.getLogger("pc_activity_logger")
+OPENWEBUI_CLIENT_USER_AGENT = "pc-activity-logger"
 
 
 REQUIRED_KEYS = {"activity", "project", "category", "detail", "confidence"}
@@ -157,6 +158,7 @@ class OpenWebUIClient:
         self.session.headers.update(
             {
                 "Authorization": f"Bearer {config.api_key}",
+                "X-OpenWebUI-Client-User-Agent": OPENWEBUI_CLIENT_USER_AGENT,
             }
         )
         self._note_ids: dict[str, str] = {}

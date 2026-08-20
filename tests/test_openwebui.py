@@ -16,6 +16,15 @@ from pc_activity_logger.windows import ActiveWindow
 
 
 class ModelResponseTests(unittest.TestCase):
+    def test_sets_openwebui_client_user_agent_header(self) -> None:
+        client = OpenWebUIClient(
+            OpenWebUIConfig("http://localhost:8080/api", "secret", "model")
+        )
+        self.assertEqual(
+            client.session.headers["X-OpenWebUI-Client-User-Agent"],
+            "pc-activity-logger",
+        )
+
     def test_extracts_plain_json(self) -> None:
         value = _extract_json(
             '{"activity":"確認","project":"p","category":"development",'

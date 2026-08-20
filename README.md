@@ -111,6 +111,8 @@ notes:
 | `timeout_sec` | API応答を待つ最大秒数 |
 | `max_tokens` | Visionモデルが返す最大トークン数 |
 
+Files、Chat Completions、Notesを含むすべてのOpenWebUI APIリクエストには、クライアント識別用として`X-OpenWebUI-Client-User-Agent: pc-activity-logger`が固定で付与されます。この値は設定ファイルから変更できません。
+
 ### 撮影設定
 
 | 項目 | 内容 |

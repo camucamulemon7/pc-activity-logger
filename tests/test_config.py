@@ -42,6 +42,5 @@ storage:
             with self.assertRaisesRegex(ValueError, "Replace openwebui.api_key"):
                 load_config(config_path)
 
-
 if __name__ == "__main__":
     unittest.main()
