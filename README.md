@@ -169,6 +169,44 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run.ps1 `
 
 画面取得には対話デスクトップが必要なため、「PC起動時」ではなく「ユーザーログオン時」にタスクスケジューラから起動してください。
 
+### スクリプトで登録（推奨）
+
+セットアップと`config.yaml`の設定を済ませた後、通常権限のPowerShellで実行します。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\register-task.ps1
+```
+
+タスク名は`PC Activity Logger`です。現在のユーザーが次回ログオンしたとき、`.venv\Scripts\pythonw.exe`で画面を表示せずに起動します。既に同名タスクがある場合は現在の設定で更新します。
+
+登録直後にも起動する場合：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\register-task.ps1 -StartNow
+```
+
+状態確認：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\status-task.ps1
+```
+
+停止して登録解除：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\unregister-task.ps1
+```
+
+実際には登録せず、登録内容だけを確認する場合は`-WhatIf`を指定できます。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\register-task.ps1 -WhatIf
+```
+
+社給PCなどでタスク登録がグループポリシーにより禁止されている場合、制限を回避せずIT管理者へ依頼してください。
+
+### タスクスケジューラで手動登録
+
 タスクスケジューラの操作には次を指定します。
 
 ```text
