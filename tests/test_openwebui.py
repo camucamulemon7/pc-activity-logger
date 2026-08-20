@@ -115,8 +115,57 @@ class ModelResponseTests(unittest.TestCase):
         self.assertEqual(len(user_content[0]["uuid"]), 64)
         self.assertIn(user_content[0]["uuid"], user_content[1]["text"])
         self.assertEqual(payload["max_tokens"], 1024)
+        self.assertEqual(payload["temperature"], 0)
         self.assertFalse(payload["chat_template_kwargs"]["enable_thinking"])
         self.assertEqual(payload["response_format"]["type"], "json_schema")
+        self.assertTrue(payload["response_format"]["json_schema"]["strict"])
+        retry_payload = client.session.post.call_args_list[1].kwargs["json"]
+        self.assertEqual(len(retry_payload["messages"]), 2)
+        self.assertIn("空または利用不能", retry_payload["messages"][1]["content"])
+
+    def test_retries_malformed_json_as_correction_conversation(self) -> None:
+        invalid = Mock(spec=requests.Response)
+        invalid.status_code = 200
+        invalid.raise_for_status.return_value = None
+        broken = '{"activity":"画面を確認","project":"p" "category":"other"}'
+        invalid.json.return_value = {
+            "choices": [{"message": {"content": broken}}]
+        }
+        valid = Mock(spec=requests.Response)
+        valid.status_code = 200
+        valid.raise_for_status.return_value = None
+        valid.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"activity":"画面を確認している","project":"p",'
+                            '"category":"other","detail":"画面の詳細を確認している",'
+                            '"confidence":0.8}'
+                        )
+                    }
+                }
+            ]
+        }
+        client = OpenWebUIClient(
+            OpenWebUIConfig("http://localhost/api", "secret", "model")
+        )
+        client.session.post = Mock(side_effect=[invalid, valid])
+        window = ActiveWindow(
+            0,
+            "title",
+            "app.exe",
+            {"left": 0, "top": 0, "width": 100, "height": 100},
+        )
+
+        result = client.analyze(b"image", __import__("datetime").datetime.now(), window)
+
+        self.assertEqual(result.confidence, 0.8)
+        retry_messages = client.session.post.call_args_list[1].kwargs["json"][
+            "messages"
+        ]
+        self.assertEqual(retry_messages[1], {"role": "assistant", "content": broken})
+        self.assertIn("有効なJSON", retry_messages[2]["content"])
 
     def test_creates_daily_openwebui_note(self) -> None:
         notes_list = Mock(spec=requests.Response)

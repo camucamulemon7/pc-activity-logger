@@ -1,4 +1,5 @@
 import unittest
+import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -39,6 +40,48 @@ class MainTests(unittest.TestCase):
         capture.assert_not_called()
         client.upload_temporary_image.assert_not_called()
         client.analyze.assert_not_called()
+
+    def test_deletes_openwebui_file_when_analysis_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_dir = Path(temporary)
+            config = Config(
+                openwebui=OpenWebUIConfig(
+                    "http://localhost:8080/api", "secret", "model"
+                ),
+                capture=CaptureConfig(idle_threshold_sec=0),
+                storage=StorageConfig(data_dir),
+                notes=NotesConfig(),
+            )
+            client = Mock()
+            client.upload_temporary_image.return_value = "file-123"
+            client.analyze.side_effect = ValueError("invalid JSON")
+            window = Mock()
+            window.app_name = "app.exe"
+            window.title = "title"
+            window.monitor = {"left": 0, "top": 0, "width": 100, "height": 100}
+            window.window_rect = window.monitor
+
+            with (
+                patch(
+                    "pc_activity_logger.main.is_interactive_session_available",
+                    return_value=True,
+                ),
+                patch("pc_activity_logger.main.get_active_window", return_value=window),
+                patch("pc_activity_logger.main.capture_monitor", return_value=b"monitor"),
+                patch(
+                    "pc_activity_logger.main.crop_to_active_window",
+                    return_value=b"active",
+                ),
+                patch("pc_activity_logger.main.difference_hash", return_value=123),
+                patch(
+                    "pc_activity_logger.main.save_screenshot",
+                    side_effect=[data_dir / "monitor.jpg", data_dir / "active.jpg"],
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "invalid JSON"):
+                    run_once(config, client, CaptureState())
+
+            client.delete_file.assert_called_once_with("file-123")
 
     def test_skips_entire_cycle_when_session_is_unavailable(self) -> None:
         config = Config(

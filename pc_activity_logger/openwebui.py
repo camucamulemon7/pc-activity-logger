@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import json
 import logging
@@ -301,13 +302,14 @@ class OpenWebUIClient:
         )
         payload = {
             "model": self.config.model,
-            "temperature": 0.1,
+            "temperature": 0,
             "max_tokens": self.config.max_tokens,
             "chat_template_kwargs": {"enable_thinking": False},
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
                     "name": "pc_activity",
+                    "strict": True,
                     "schema": ACTIVITY_JSON_SCHEMA,
                 },
             },
@@ -327,9 +329,10 @@ class OpenWebUIClient:
         }
         last_error: ValueError | None = None
         for attempt in range(2):
+            response_text: str | None = None
             response = self.session.post(
                 f"{self.config.base_url}/chat/completions",
-                json=payload,
+                json=copy.deepcopy(payload),
                 timeout=self.config.timeout_sec,
             )
             _raise_for_status(response)
@@ -338,8 +341,8 @@ class OpenWebUIClient:
                 message = data["choices"][0]["message"]
                 if not isinstance(message, dict):
                     raise ValueError("OpenWebUI response message was not an object")
-                content = _message_text(message)
-                return _validate(_extract_json(content))
+                response_text = _message_text(message)
+                return _validate(_extract_json(response_text))
             except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
                 last_error = ValueError("Unexpected OpenWebUI response format")
                 last_error.__cause__ = exc
@@ -347,5 +350,30 @@ class OpenWebUIClient:
                 last_error = exc
             if attempt == 0:
                 LOGGER.warning("Unusable model response; retrying once: %s", last_error)
+                if response_text:
+                    payload["messages"].extend(
+                        [
+                            {"role": "assistant", "content": response_text},
+                            {
+                                "role": "user",
+                                "content": (
+                                    "前の応答は有効なJSONではありません。内容を見直し、"
+                                    "指定スキーマに完全一致する有効なJSONオブジェクトだけを"
+                                    "返してください。文字列内の引用符は必ずエスケープしてください。"
+                                ),
+                            },
+                        ]
+                    )
+                else:
+                    payload["messages"].append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "前の応答は空または利用不能でした。画像を再確認し、"
+                                "指定スキーマに完全一致する有効なJSONオブジェクトだけを"
+                                "返してください。"
+                            ),
+                        }
+                    )
         assert last_error is not None
         raise last_error

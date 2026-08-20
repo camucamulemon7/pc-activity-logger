@@ -91,37 +91,36 @@ def run_once(
     file_id = client.upload_temporary_image(analysis_image, captured_at)
     LOGGER.info("Uploaded temporary OpenWebUI File: %s", file_id)
     try:
-        analysis = client.analyze(
-            analysis_image, captured_at, window, file_id=file_id
-        )
-    except Exception:
-        LOGGER.error("Analysis failed; screenshot retained for troubleshooting")
-        raise
+        try:
+            analysis = client.analyze(
+                analysis_image, captured_at, window, file_id=file_id
+            )
+        except Exception:
+            LOGGER.error("Analysis failed; local screenshot retained for troubleshooting")
+            raise
 
-    record = {
-        "timestamp": captured_at.isoformat(),
-        "app_name": window.app_name,
-        "window_title": window.title,
-        "monitor": window.monitor,
-        "window_rect": window.window_rect,
-        "screenshot": str(screenshot_path.relative_to(config.storage.data_dir)),
-        "monitor_screenshot": str(
-            monitor_screenshot_path.relative_to(config.storage.data_dir)
-        ),
-        **analysis.as_dict(),
-    }
-    activity_path = append_activity(config.storage.data_dir, captured_at, record)
-    if state is not None:
-        state.last_analyzed_hash = current_hash
-        state.last_analyzed_at = now
-    try:
-        client.delete_file(file_id)
-        LOGGER.info("Deleted temporary OpenWebUI File: %s", file_id)
-    except Exception:
-        LOGGER.exception(
-            "Failed to delete temporary OpenWebUI File after JSONL save: %s",
-            file_id,
-        )
+        record = {
+            "timestamp": captured_at.isoformat(),
+            "app_name": window.app_name,
+            "window_title": window.title,
+            "monitor": window.monitor,
+            "window_rect": window.window_rect,
+            "screenshot": str(screenshot_path.relative_to(config.storage.data_dir)),
+            "monitor_screenshot": str(
+                monitor_screenshot_path.relative_to(config.storage.data_dir)
+            ),
+            **analysis.as_dict(),
+        }
+        activity_path = append_activity(config.storage.data_dir, captured_at, record)
+        if state is not None:
+            state.last_analyzed_hash = current_hash
+            state.last_analyzed_at = now
+    finally:
+        try:
+            client.delete_file(file_id)
+            LOGGER.info("Deleted temporary OpenWebUI File: %s", file_id)
+        except Exception:
+            LOGGER.exception("Failed to delete temporary OpenWebUI File: %s", file_id)
     if config.notes.enabled:
         try:
             note_id = client.append_daily_note(
