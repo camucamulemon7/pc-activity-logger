@@ -1,0 +1,22 @@
+openwebui:
+  base_url: "http://openwebui:8080/api"
+  api_key: "YOUR_API_KEY"
+  model: "gemma-4-31B-it"
+  timeout_sec: 120
+  max_tokens: 1024
+
+capture:
+  interval_sec: 180
+  jpeg_quality: 80
+  idle_threshold_sec: 300
+  skip_same_screen: true
+  same_screen_max_distance: 3
+  same_screen_force_after_sec: 900
+  skip_unavailable_session: true
+
+storage:
+  data_dir: "data"
+
+notes:
+  enabled: true
+  title_prefix: "PC作業記録"
