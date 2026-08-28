@@ -14,6 +14,61 @@ from pc_activity_logger.main import CaptureState, run_once
 
 
 class MainTests(unittest.TestCase):
+    def test_skips_excluded_app_before_screenshot(self) -> None:
+        config = Config(
+            openwebui=OpenWebUIConfig(
+                "http://localhost:8080/api", "secret", "model"
+            ),
+            capture=CaptureConfig(
+                idle_threshold_sec=0, excluded_app_names=("1password",)
+            ),
+            storage=StorageConfig(Path("data")),
+            notes=NotesConfig(),
+        )
+        window = Mock(app_name="1Password.EXE", title="Password Manager")
+        client = Mock()
+
+        with (
+            patch(
+                "pc_activity_logger.main.is_interactive_session_available",
+                return_value=True,
+            ),
+            patch("pc_activity_logger.main.get_active_window", return_value=window),
+            patch("pc_activity_logger.main.capture_monitor") as capture,
+        ):
+            run_once(config, client)
+
+        capture.assert_not_called()
+        client.upload_temporary_image.assert_not_called()
+
+    def test_skips_excluded_window_title_before_screenshot(self) -> None:
+        config = Config(
+            openwebui=OpenWebUIConfig(
+                "http://localhost:8080/api", "secret", "model"
+            ),
+            capture=CaptureConfig(
+                idle_threshold_sec=0,
+                excluded_window_titles=("機密プロジェクト",),
+            ),
+            storage=StorageConfig(Path("data")),
+            notes=NotesConfig(),
+        )
+        window = Mock(app_name="chrome.exe", title="機密プロジェクト - Chrome")
+        client = Mock()
+
+        with (
+            patch(
+                "pc_activity_logger.main.is_interactive_session_available",
+                return_value=True,
+            ),
+            patch("pc_activity_logger.main.get_active_window", return_value=window),
+            patch("pc_activity_logger.main.capture_monitor") as capture,
+        ):
+            run_once(config, client)
+
+        capture.assert_not_called()
+        client.upload_temporary_image.assert_not_called()
+
     def test_skips_entire_cycle_when_user_is_idle(self) -> None:
         config = Config(
             openwebui=OpenWebUIConfig(

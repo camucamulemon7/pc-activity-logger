@@ -25,6 +25,8 @@ class CaptureConfig:
     same_screen_max_distance: int = 3
     same_screen_force_after_sec: int = 900
     skip_unavailable_session: bool = True
+    excluded_app_names: tuple[str, ...] = ()
+    excluded_window_titles: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -53,7 +55,14 @@ def _section(raw: dict[str, Any], name: str) -> dict[str, Any]:
     return value
 
 
-def load_config(path: Path) -> Config:
+def _string_list(section: dict[str, Any], key: str) -> tuple[str, ...]:
+    value = section.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"capture.{key} must be a list of strings")
+    return tuple(item.strip() for item in value if item.strip())
+
+
+def load_config(path: Path, api_key_override: str | None = None) -> Config:
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except FileNotFoundError as exc:
@@ -71,10 +80,13 @@ def load_config(path: Path) -> Config:
     if not isinstance(cap, dict) or not isinstance(storage, dict) or not isinstance(notes, dict):
         raise ValueError("'capture', 'storage', and 'notes' must be YAML mappings")
 
-    for key in ("base_url", "api_key", "model"):
+    for key in ("base_url", "model"):
         if not isinstance(ow.get(key), str) or not ow[key].strip():
             raise ValueError(f"openwebui.{key} must be a non-empty string")
-    if ow["api_key"] == "YOUR_API_KEY":
+    api_key = api_key_override if api_key_override is not None else ow.get("api_key")
+    if not isinstance(api_key, str) or not api_key.strip():
+        raise ValueError("openwebui.api_key must be a non-empty string")
+    if api_key == "YOUR_API_KEY":
         raise ValueError("Replace openwebui.api_key in config.yaml")
 
     interval = int(cap.get("interval_sec", 180))
@@ -84,6 +96,8 @@ def load_config(path: Path) -> Config:
     same_screen_max_distance = int(cap.get("same_screen_max_distance", 3))
     same_screen_force_after = int(cap.get("same_screen_force_after_sec", 900))
     skip_unavailable_session = cap.get("skip_unavailable_session", True)
+    excluded_app_names = _string_list(cap, "excluded_app_names")
+    excluded_window_titles = _string_list(cap, "excluded_window_titles")
     timeout = int(ow.get("timeout_sec", 120))
     max_tokens = int(ow.get("max_tokens", 1024))
     if interval < 1:
@@ -119,7 +133,7 @@ def load_config(path: Path) -> Config:
     return Config(
         openwebui=OpenWebUIConfig(
             base_url=ow["base_url"].rstrip("/"),
-            api_key=ow["api_key"],
+            api_key=api_key.strip(),
             model=ow["model"],
             timeout_sec=timeout,
             max_tokens=max_tokens,
@@ -132,6 +146,8 @@ def load_config(path: Path) -> Config:
             same_screen_max_distance=same_screen_max_distance,
             same_screen_force_after_sec=same_screen_force_after,
             skip_unavailable_session=skip_unavailable_session,
+            excluded_app_names=excluded_app_names,
+            excluded_window_titles=excluded_window_titles,
         ),
         storage=StorageConfig(data_dir=data_dir),
         notes=NotesConfig(enabled=notes_enabled, title_prefix=title_prefix.strip()),

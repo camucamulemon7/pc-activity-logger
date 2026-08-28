@@ -14,6 +14,9 @@ WTS_CURRENT_SESSION = 0xFFFFFFFF
 WTS_CONNECT_STATE = 8
 WTS_ACTIVE = 0
 HMONITOR = wintypes.HANDLE
+WNDENUMPROC = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(
+    wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+)
 
 
 class RECT(ctypes.Structure):
@@ -50,6 +53,13 @@ class ActiveWindow:
     window_rect: dict[str, int] | None = None
 
 
+@dataclass(frozen=True)
+class OpenWindow:
+    hwnd: int
+    title: str
+    app_name: str
+
+
 def _windows_apis() -> tuple[ctypes.WinDLL, ctypes.WinDLL]:
     if not hasattr(ctypes, "windll"):
         raise RuntimeError("This application can only capture windows on Windows")
@@ -58,6 +68,10 @@ def _windows_apis() -> tuple[ctypes.WinDLL, ctypes.WinDLL]:
 
     user32.GetForegroundWindow.argtypes = []
     user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.EnumWindows.argtypes = [WNDENUMPROC, wintypes.LPARAM]
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
     user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
     user32.GetWindowTextLengthW.restype = ctypes.c_int
     user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
@@ -217,3 +231,43 @@ def get_active_window() -> ActiveWindow:
             "height": window_rect.bottom - window_rect.top,
         },
     )
+
+
+def get_open_windows() -> list[OpenWindow]:
+    """Return visible top-level windows that have a non-empty title."""
+    user32, _kernel32 = _windows_apis()
+    windows: list[OpenWindow] = []
+    seen: set[tuple[str, str]] = set()
+
+    @WNDENUMPROC
+    def collect(hwnd: int, _lparam: int) -> bool:
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buffer, length + 1)
+            title = buffer.value.strip()
+            if not title:
+                return True
+            app_name = _process_name(hwnd)
+            identity = (app_name.casefold(), title.casefold())
+            if identity not in seen:
+                seen.add(identity)
+                windows.append(
+                    OpenWindow(hwnd=hwnd, title=title, app_name=app_name)
+                )
+        except Exception:
+            # Some elevated or short-lived system windows cannot be queried.
+            # They are not useful picker candidates, so keep enumerating.
+            return True
+        return True
+
+    ctypes.set_last_error(0)
+    if not user32.EnumWindows(collect, 0):
+        error = ctypes.get_last_error()
+        if error:
+            raise ctypes.WinError(error)
+    return sorted(windows, key=lambda item: (item.app_name.casefold(), item.title.casefold()))

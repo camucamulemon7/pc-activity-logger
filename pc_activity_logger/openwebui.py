@@ -158,6 +158,7 @@ class OpenWebUIClient:
         self.session.headers.update(
             {
                 "Authorization": f"Bearer {config.api_key}",
+                "User-Agent": OPENWEBUI_CLIENT_USER_AGENT,
                 "X-OpenWebUI-Client-User-Agent": OPENWEBUI_CLIENT_USER_AGENT,
             }
         )
@@ -172,6 +173,23 @@ class OpenWebUIClient:
 
     def _files_url(self, suffix: str = "") -> str:
         return f"{self.webui_root}/api/v1/files{suffix}"
+
+    def list_models(self) -> list[str]:
+        response = self.session.get(
+            f"{self.config.base_url}/models", timeout=self.config.timeout_sec
+        )
+        _raise_for_status(response)
+        payload = response.json()
+        items = payload.get("data", []) if isinstance(payload, dict) else []
+        if not isinstance(items, list):
+            raise ValueError("Unexpected OpenWebUI models response")
+        return sorted(
+            item["id"]
+            for item in items
+            if isinstance(item, dict)
+            and isinstance(item.get("id"), str)
+            and item["id"]
+        )
 
     def upload_temporary_image(
         self, image_bytes: bytes, captured_at: datetime

@@ -4,4 +4,6 @@ __pycache__/
 config.yaml
 data/
 logs/
-
+build/
+dist/
+*.spec.bak

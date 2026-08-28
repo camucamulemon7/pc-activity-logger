@@ -21,6 +21,11 @@ Windowsの前面ウィンドウを定期的に撮影し、OpenWebUI経由でVisi
 - キーボード・マウスのIdle時間によるスキップ
 - ロック画面、セキュアデスクトップ、切断セッションの検出
 - 知覚ハッシュによる同一画面スキップ
+- アプリ名・ウィンドウタイトルによる撮影前の除外
+- Windows GUIからの設定、接続テスト、記録開始・停止
+- システムトレイ常駐とログオン時の自動起動
+- Windows Credential ManagerへのAPIキー保存
+- PyInstallerによるポータブルEXE生成
 
 ## 処理フロー
 
@@ -42,10 +47,11 @@ OpenWebUI側の一時画像は解析の成否にかかわらず処理周期の�
 ## 必要環境
 
 - Windows 10またはWindows 11
-- Python 3.10以上
 - 画像入力に対応したモデルを登録済みのOpenWebUI
 - OpenWebUI APIキー
 - OpenWebUIへ接続できるネットワーク環境
+
+ソースコードから実行またはEXEをビルドする場合はPython 3.10以上が必要です。ビルド済みEXEを実行するだけならPythonは不要です。
 
 動作確認に使用したモデルは`gemma-4-31B-it`です。他のVisionモデルも、OpenAI互換のChat Completions APIで画像入力とJSON Schema出力を処理できれば使用できます。
 
@@ -72,9 +78,70 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 
 組織のポリシーでPowerShellまたはPythonの実行が制限されている場合、制限を回避せず管理者へ確認してください。
 
+## GUI版
+
+### ソースコードから起動
+
+GUI用の依存パッケージをインストールします。
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r .\requirements-gui.txt
+```
+
+次にGUIを起動します。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-gui.ps1
+```
+
+初回起動後は次の順に操作します。
+
+1. OpenWebUI Base URLとAPIキーを入力
+2. 「接続テスト」で利用可能なモデルを取得
+3. Visionモデルと撮影・保存設定を確認
+4. 「設定を保存」を押す
+5. 「記録を開始」を押す
+
+ウィンドウの閉じるボタンを押すと終了せず、システムトレイへ格納されます。終了する場合はトレイアイコンのメニューから「終了」を選択してください。
+
+GUI版の設定ファイル、ログ、既定の保存データは次に作成されます。
+
+```text
+%LOCALAPPDATA%\PCActivityLogger\
+├─ config.yaml
+├─ data\
+└─ logs\pc-activity-logger.log
+```
+
+APIキーは`config.yaml`へ書き込まず、現在のWindowsユーザーのCredential Managerへ保存します。CLI版のプロジェクト直下にある`config.yaml`とは独立しています。
+
+### Windowsログオン時にGUIを自動起動
+
+GUIの「Windowsログオン時に自動起動」を有効にして設定を保存すると、現在のユーザーのタスクスケジューラへ登録されます。管理者権限は要求しませんが、組織のポリシーでタスク登録が禁止されている場合は利用できません。
+
+自動起動時はウィンドウを表示せずトレイへ常駐し、保存済み設定で記録を開始します。ログオフまたはシャットダウン時にはWindowsによって終了されます。
+
+### Windows EXEをビルド
+
+次のスクリプトでPyInstallerのポータブル`onedir`版を生成します。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build-gui.ps1
+```
+
+生成物は次のディレクトリです。
+
+```text
+dist\PCActivityLogger\
+├─ PCActivityLogger.exe
+└─ _internal\
+```
+
+配布するときは`PCActivityLogger.exe`だけではなく、`PCActivityLogger`フォルダー全体をZIPなどで配布してください。初回起動は`PCActivityLogger.exe`をダブルクリックします。現時点ではコード署名を行わないため、組織のSmartScreenやアプリ制御ポリシーにより実行が止められる場合があります。
+
 ## 設定
 
-生成された`config.yaml`を編集します。このファイルは`.gitignore`に含まれており、GitHubへは公開されません。
+以下はCLI版の設定です。生成された`config.yaml`を編集します。このファイルは`.gitignore`に含まれており、GitHubへは公開されません。GUI版は画面上で同じ項目を設定できます。
 
 ```yaml
 openwebui:
@@ -92,6 +159,10 @@ capture:
   same_screen_max_distance: 3
   same_screen_force_after_sec: 900
   skip_unavailable_session: true
+  excluded_app_names:
+    - "1Password.exe"
+  excluded_window_titles:
+    - "機密プロジェクト"
 
 storage:
   data_dir: "data"
@@ -111,7 +182,7 @@ notes:
 | `timeout_sec` | API応答を待つ最大秒数 |
 | `max_tokens` | Visionモデルが返す最大トークン数 |
 
-Files、Chat Completions、Notesを含むすべてのOpenWebUI APIリクエストには、クライアント識別用として`X-OpenWebUI-Client-User-Agent: pc-activity-logger`が固定で付与されます。この値は設定ファイルから変更できません。
+Files、Chat Completions、Notesを含むすべてのOpenWebUI APIリクエストには、クライアント識別用として`User-Agent: pc-activity-logger`と`X-OpenWebUI-Client-User-Agent: pc-activity-logger`が固定で付与されます。OpenWebUIが標準`User-Agent`からモデル向けヘッダーを生成する場合にも、Langfuse上では`pc-activity-logger`として記録されます。これらの値は設定ファイルから変更できません。
 
 ### 撮影設定
 
@@ -124,8 +195,18 @@ Files、Chat Completions、Notesを含むすべてのOpenWebUI APIリクエス�
 | `same_screen_max_distance` | 同一画面と判定する知覚ハッシュ距離（0～64） |
 | `same_screen_force_after_sec` | 同じ画面でも強制的に再解析するまでの秒数 |
 | `skip_unavailable_session` | ロック中・切断中の撮影を省略するか |
+| `excluded_app_names` | 撮影しないアプリ名の一覧。大文字・小文字を区別しない部分一致 |
+| `excluded_window_titles` | 撮影しないウィンドウタイトルの一覧。大文字・小文字を区別しない部分一致 |
 
 `same_screen_max_distance`は、まず既定値の`3`を推奨します。大きくすると、より変化のある画面も同一扱いになります。同一画面の比較状態はメモリ上だけに保持されるため、プログラム再起動後の最初の画面は必ず解析します。
+
+### 撮影除外設定
+
+GUI版では「開いているWindowから選択」を押すと、現在表示中のWindowをアプリ名とタイトルの一覧から選択できます。「アプリ全体を追加」または「このタイトルを追加」を選び、設定を保存してください。手入力する場合は「除外アプリ名」と「除外タイトル」へ1行1件で入力します。CLI版では上記の`excluded_app_names`と`excluded_window_titles`を使用します。いずれかの文字列が現在のアプリ名またはウィンドウタイトルに部分一致すると、スクリーンショット取得前にその周期を終了します。
+
+一度追加して保存した対象は履歴として設定ファイルに残るため、そのWindowを閉じた後やPCを再起動した後も除外されます。タイトルは選択時の全文が追加されるので、日時やファイル名など変化する部分がある場合は、追加後に安定した部分だけへ短く編集してください。
+
+たとえば`excluded_app_names`に`1Password.exe`を指定すると1Password全体を除外し、`excluded_window_titles`に`機密プロジェクト`を指定すると、その文字列をタイトルに含むChrome、Edge、VS Codeなどの画面を除外できます。除外された画面のアプリ名やタイトルはログへ出力しません。
 
 ### Note設定
 
@@ -170,6 +251,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run.ps1 `
 ## Windowsログオン時に自動起動
 
 画面取得には対話デスクトップが必要なため、「PC起動時」ではなく「ユーザーログオン時」にタスクスケジューラから起動してください。
+
+GUI版では画面上の「Windowsログオン時に自動起動」を使えます。以下はCLI版を登録する手順です。
 
 ### スクリプトで登録（推奨）
 
@@ -256,6 +339,8 @@ JSONLの例：
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
+GUIを含む全依存関係が必要なため、先に`requirements-gui.txt`をインストールしてください。
+
 ## トラブルシューティング
 
 ### `400 Bad Request`
@@ -276,9 +361,14 @@ JSONLの例：
 
 エラーではありません。前回解析した画面とほぼ同じため、API呼び出しを省略しています。`same_screen_force_after_sec`を経過すると同じ画面でも再解析します。
 
+### `Skipping capture; foreground window matches an exclusion rule`
+
+エラーではありません。現在のアプリ名またはウィンドウタイトルが撮影除外設定に一致したため、スクリーンショット取得とAPI呼び出しを省略しています。
+
 ## プライバシーとセキュリティ
 
 - `config.yaml`、`data/`、`.venv/`、ログはGit対象外です。
+- GUI版のAPIキーはWindows Credential Managerへ保存され、GUI版の`config.yaml`には含まれません。
 - APIキーをREADME、Issue、ログへ貼り付けないでください。
 - OpenWebUIまでの通信経路とデータ保存先を保護してください。
 - Windows側には前面画像とモニター全体画像が保存されます。
@@ -289,7 +379,6 @@ JSONLの例：
 ## 現在未実装の機能
 
 - Windows側スクリーンショットの保存期限による自動削除
-- アプリ名・ウィンドウタイトルによる撮影除外リスト
 - OpenWebUIに残った古い一時ファイルの起動時クリーンアップ
 - 日報・週報の自動生成
 - プロジェクトへの確定的な紐付け

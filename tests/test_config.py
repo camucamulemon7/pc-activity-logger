@@ -42,5 +42,56 @@ storage:
             with self.assertRaisesRegex(ValueError, "Replace openwebui.api_key"):
                 load_config(config_path)
 
+    def test_accepts_api_key_override_when_yaml_omits_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config_path = Path(temporary) / "config.yaml"
+            config_path.write_text(
+                """openwebui:
+  base_url: http://localhost:8080/api
+  model: vision-model
+""",
+                encoding="utf-8",
+            )
+            config = load_config(config_path, api_key_override="credential-secret")
+            self.assertEqual(config.openwebui.api_key, "credential-secret")
+
+    def test_loads_window_exclusion_lists(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config_path = Path(temporary) / "config.yaml"
+            config_path.write_text(
+                """openwebui:
+  base_url: http://localhost:8080/api
+  api_key: secret
+  model: vision-model
+capture:
+  excluded_app_names:
+    - 1Password.exe
+  excluded_window_titles:
+    - Private Project
+""",
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            self.assertEqual(config.capture.excluded_app_names, ("1Password.exe",))
+            self.assertEqual(
+                config.capture.excluded_window_titles, ("Private Project",)
+            )
+
+    def test_rejects_non_list_window_exclusion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config_path = Path(temporary) / "config.yaml"
+            config_path.write_text(
+                """openwebui:
+  base_url: http://localhost:8080/api
+  api_key: secret
+  model: vision-model
+capture:
+  excluded_app_names: 1Password.exe
+""",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "must be a list of strings"):
+                load_config(config_path)
+
 if __name__ == "__main__":
     unittest.main()

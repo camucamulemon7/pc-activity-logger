@@ -5,13 +5,16 @@ param(
 
     [string]$Config,
 
+    [string]$Executable,
+
+    [switch]$Gui,
+
     [switch]$StartNow
 )
 
 $ErrorActionPreference = "Stop"
 
 $projectDirectory = [System.IO.Path]::GetFullPath($PSScriptRoot)
-$python = Join-Path $projectDirectory ".venv\Scripts\pythonw.exe"
 if ([string]::IsNullOrWhiteSpace($Config)) {
     $configPath = Join-Path $projectDirectory "config.yaml"
 } elseif ([System.IO.Path]::IsPathRooted($Config)) {
@@ -20,28 +23,35 @@ if ([string]::IsNullOrWhiteSpace($Config)) {
     $configPath = [System.IO.Path]::GetFullPath((Join-Path $projectDirectory $Config))
 }
 
-if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-    throw "Python virtual environment not found: $python. Run setup.ps1 first."
-}
 if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
     throw "Configuration file not found: $configPath"
 }
 
-$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-$quotedConfig = '"{0}"' -f $configPath.Replace('"', '\"')
-$arguments = "-m pc_activity_logger.main --config $quotedConfig"
+if (-not [string]::IsNullOrWhiteSpace($Executable)) {
+    $program = [System.IO.Path]::GetFullPath($Executable)
+    $programArguments = '--background --config "{0}"' -f $configPath.Replace('"', '\"')
+} else {
+    $program = Join-Path $projectDirectory ".venv\Scripts\pythonw.exe"
+    $module = if ($Gui) { "pc_activity_logger.gui" } else { "pc_activity_logger.main" }
+    $modeArguments = if ($Gui) { " --background" } else { "" }
+    $programArguments = '-m {0}{1} --config "{2}"' -f $module, $modeArguments, $configPath.Replace('"', '\"')
+}
+if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+    throw "Executable not found: $program. Run setup.ps1 first."
+}
 
+$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 if (-not $PSCmdlet.ShouldProcess($TaskName, "Register or update scheduled task")) {
     Write-Host "User: $currentUser"
-    Write-Host "Program: $python"
-    Write-Host "Arguments: $arguments"
+    Write-Host "Program: $program"
+    Write-Host "Arguments: $programArguments"
     Write-Host "Trigger: At logon"
     return
 }
 
 $action = New-ScheduledTaskAction `
-    -Execute $python `
-    -Argument $arguments `
+    -Execute $program `
+    -Argument $programArguments `
     -WorkingDirectory $projectDirectory
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
 $principal = New-ScheduledTaskPrincipal `
@@ -66,7 +76,7 @@ Register-ScheduledTask `
 
 Write-Host "Registered scheduled task: $TaskName"
 Write-Host "User: $currentUser"
-Write-Host "Program: $python"
+Write-Host "Program: $program"
 Write-Host "Config: $configPath"
 
 if ($StartNow) {

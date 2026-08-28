@@ -29,6 +29,17 @@ class CaptureState:
     last_analyzed_at: float | None = None
 
 
+def _contains_any(value: str, patterns: tuple[str, ...]) -> bool:
+    normalized = value.casefold()
+    return any(pattern.casefold() in normalized for pattern in patterns)
+
+
+def is_excluded_window(config: Config, app_name: str, window_title: str) -> bool:
+    return _contains_any(app_name, config.capture.excluded_app_names) or _contains_any(
+        window_title, config.capture.excluded_window_titles
+    )
+
+
 def run_once(
     config: Config,
     client: OpenWebUIClient,
@@ -51,8 +62,12 @@ def run_once(
             )
             return
 
-    captured_at = datetime.now().astimezone()
     window = get_active_window()
+    if is_excluded_window(config, window.app_name, window.title):
+        LOGGER.info("Skipping capture; foreground window matches an exclusion rule")
+        return
+
+    captured_at = datetime.now().astimezone()
     LOGGER.info("Capturing %s (%s)", window.app_name, window.title)
     image = capture_monitor(window.monitor, config.capture.jpeg_quality)
     analysis_image = crop_to_active_window(

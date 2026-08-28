@@ -13,6 +13,8 @@ capture:
   same_screen_max_distance: 3
   same_screen_force_after_sec: 900
   skip_unavailable_session: true
+  excluded_app_names: []
+  excluded_window_titles: []
 
 storage:
   data_dir: "data"

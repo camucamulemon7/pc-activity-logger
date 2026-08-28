@@ -24,6 +24,10 @@ class ModelResponseTests(unittest.TestCase):
             client.session.headers["X-OpenWebUI-Client-User-Agent"],
             "pc-activity-logger",
         )
+        self.assertEqual(
+            client.session.headers["User-Agent"],
+            "pc-activity-logger",
+        )
 
     def test_extracts_plain_json(self) -> None:
         value = _extract_json(
