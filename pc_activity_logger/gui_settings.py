@@ -8,6 +8,7 @@ import keyring
 import yaml
 
 from .config import Config, load_config
+from .prompts import DEFAULT_ANALYSIS_SYSTEM_PROMPT
 
 
 CREDENTIAL_SERVICE = "PCActivityLogger"
@@ -32,6 +33,7 @@ def default_values() -> dict[str, Any]:
         "model": "gemma-4-31B-it",
         "timeout_sec": 120,
         "max_tokens": 1024,
+        "system_prompt": DEFAULT_ANALYSIS_SYSTEM_PROMPT,
         "interval_sec": 180,
         "jpeg_quality": 80,
         "idle_threshold_sec": 300,
@@ -60,7 +62,7 @@ def read_values(path: Path) -> dict[str, Any]:
     notes = raw.get("notes", {})
     if not all(isinstance(section, dict) for section in (ow, capture, storage, notes)):
         raise ValueError("GUI config sections must be YAML mappings")
-    for key in ("base_url", "model", "timeout_sec", "max_tokens"):
+    for key in ("base_url", "model", "timeout_sec", "max_tokens", "system_prompt"):
         if key in ow:
             values[key] = ow[key]
     for key in (
@@ -99,6 +101,7 @@ def save_values(path: Path, values: dict[str, Any], api_key: str) -> Config:
             "model": str(values["model"]).strip(),
             "timeout_sec": int(values["timeout_sec"]),
             "max_tokens": int(values["max_tokens"]),
+            "system_prompt": str(values["system_prompt"]).strip(),
         },
         "capture": {
             "interval_sec": int(values["interval_sec"]),

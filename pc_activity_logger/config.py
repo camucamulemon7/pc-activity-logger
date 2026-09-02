@@ -6,6 +6,8 @@ from typing import Any
 
 import yaml
 
+from .prompts import DEFAULT_ANALYSIS_SYSTEM_PROMPT
+
 
 @dataclass(frozen=True)
 class OpenWebUIConfig:
@@ -14,6 +16,7 @@ class OpenWebUIConfig:
     model: str
     timeout_sec: int = 120
     max_tokens: int = 1024
+    system_prompt: str = DEFAULT_ANALYSIS_SYSTEM_PROMPT
 
 
 @dataclass(frozen=True)
@@ -100,6 +103,7 @@ def load_config(path: Path, api_key_override: str | None = None) -> Config:
     excluded_window_titles = _string_list(cap, "excluded_window_titles")
     timeout = int(ow.get("timeout_sec", 120))
     max_tokens = int(ow.get("max_tokens", 1024))
+    system_prompt = ow.get("system_prompt", DEFAULT_ANALYSIS_SYSTEM_PROMPT)
     if interval < 1:
         raise ValueError("capture.interval_sec must be at least 1")
     if not 1 <= quality <= 95:
@@ -118,6 +122,8 @@ def load_config(path: Path, api_key_override: str | None = None) -> Config:
         raise ValueError("openwebui.timeout_sec must be at least 1")
     if max_tokens < 64:
         raise ValueError("openwebui.max_tokens must be at least 64")
+    if not isinstance(system_prompt, str) or not system_prompt.strip():
+        raise ValueError("openwebui.system_prompt must be a non-empty string")
 
     config_dir = path.resolve().parent
     data_dir = Path(storage.get("data_dir", "data"))
@@ -137,6 +143,7 @@ def load_config(path: Path, api_key_override: str | None = None) -> Config:
             model=ow["model"],
             timeout_sec=timeout,
             max_tokens=max_tokens,
+            system_prompt=system_prompt.strip(),
         ),
         capture=CaptureConfig(
             interval_sec=interval,

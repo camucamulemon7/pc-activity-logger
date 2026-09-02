@@ -121,8 +121,12 @@ class ModelResponseTests(unittest.TestCase):
         self.assertEqual(result.activity, "確認")
         self.assertEqual(client.session.post.call_count, 2)
         payload = client.session.post.call_args_list[0].kwargs["json"]
-        self.assertEqual(len(payload["messages"]), 1)
-        user_content = payload["messages"][0]["content"]
+        self.assertEqual(len(payload["messages"]), 2)
+        self.assertEqual(payload["messages"][0]["role"], "system")
+        self.assertEqual(
+            payload["messages"][0]["content"], client.config.system_prompt
+        )
+        user_content = payload["messages"][1]["content"]
         self.assertEqual(user_content[0]["type"], "image_url")
         self.assertEqual(user_content[1]["type"], "text")
         self.assertEqual(len(user_content[0]["uuid"]), 64)
@@ -133,8 +137,8 @@ class ModelResponseTests(unittest.TestCase):
         self.assertEqual(payload["response_format"]["type"], "json_schema")
         self.assertTrue(payload["response_format"]["json_schema"]["strict"])
         retry_payload = client.session.post.call_args_list[1].kwargs["json"]
-        self.assertEqual(len(retry_payload["messages"]), 2)
-        self.assertIn("空または利用不能", retry_payload["messages"][1]["content"])
+        self.assertEqual(len(retry_payload["messages"]), 3)
+        self.assertIn("空または利用不能", retry_payload["messages"][2]["content"])
 
     def test_retries_malformed_json_as_correction_conversation(self) -> None:
         invalid = Mock(spec=requests.Response)
@@ -177,8 +181,8 @@ class ModelResponseTests(unittest.TestCase):
         retry_messages = client.session.post.call_args_list[1].kwargs["json"][
             "messages"
         ]
-        self.assertEqual(retry_messages[1], {"role": "assistant", "content": broken})
-        self.assertIn("有効なJSON", retry_messages[2]["content"])
+        self.assertEqual(retry_messages[2], {"role": "assistant", "content": broken})
+        self.assertIn("有効なJSON", retry_messages[3]["content"])
 
     def test_creates_daily_openwebui_note(self) -> None:
         notes_list = Mock(spec=requests.Response)
@@ -280,8 +284,48 @@ class ModelResponseTests(unittest.TestCase):
         )
         payload = client.session.post.call_args.kwargs["json"]
         self.assertEqual(
-            payload["messages"][0]["content"][0]["image_url"]["url"],
+            payload["messages"][1]["content"][0]["image_url"]["url"],
             "file-123",
+        )
+
+    def test_uses_custom_system_prompt(self) -> None:
+        valid = Mock(spec=requests.Response)
+        valid.status_code = 200
+        valid.raise_for_status.return_value = None
+        valid.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"activity":"画面を確認している","project":"p",'
+                            '"category":"other","detail":"画面の詳細を確認している",'
+                            '"confidence":0.8}'
+                        )
+                    }
+                }
+            ]
+        }
+        config = OpenWebUIConfig(
+            "http://localhost:8080/api",
+            "secret",
+            "model",
+            system_prompt="カスタムシステム指示",
+        )
+        client = OpenWebUIClient(config)
+        client.session.post = Mock(return_value=valid)
+        window = ActiveWindow(
+            0,
+            "title",
+            "app.exe",
+            {"left": 0, "top": 0, "width": 100, "height": 100},
+        )
+
+        client.analyze(b"image", __import__("datetime").datetime.now(), window)
+
+        payload = client.session.post.call_args.kwargs["json"]
+        self.assertEqual(
+            payload["messages"][0],
+            {"role": "system", "content": "カスタムシステム指示"},
         )
 
 

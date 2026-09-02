@@ -47,6 +47,7 @@ from .gui_settings import (
 )
 from .main import CaptureState, run_once
 from .openwebui import OpenWebUIClient
+from .prompts import DEFAULT_ANALYSIS_SYSTEM_PROMPT
 from .windows import OpenWindow, get_open_windows
 from . import scheduler
 
@@ -57,28 +58,57 @@ LOGGER = logging.getLogger("pc_activity_logger")
 class ActivityWorker(QThread):
     status_changed = Signal(str)
 
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: Any, initial_delay_sec: int = 0) -> None:
         super().__init__()
         self.config = config
+        self.initial_delay_sec = initial_delay_sec
         self._stop_event = threading.Event()
+        self._config_lock = threading.Lock()
 
     def stop(self) -> None:
         self._stop_event.set()
 
+    def update_config(self, config: Any) -> None:
+        with self._config_lock:
+            self.config = config
+
+    def current_config(self) -> Any:
+        with self._config_lock:
+            return self.config
+
     def run(self) -> None:
-        client = OpenWebUIClient(self.config.openwebui)
         state = CaptureState()
+        if self.initial_delay_sec > 0:
+            LOGGER.info(
+                "Waiting %d seconds before the first capture after automatic startup",
+                self.initial_delay_sec,
+            )
+            self.status_changed.emit(f"初回実行待機中（{self.initial_delay_sec}秒）")
+            if self._stop_event.wait(self.initial_delay_sec):
+                LOGGER.info("GUI worker stopped during initial delay")
+                self.status_changed.emit("停止中")
+                return
         self.status_changed.emit("実行中")
-        LOGGER.info("GUI worker started; interval=%d seconds", self.config.capture.interval_sec)
+        LOGGER.info(
+            "GUI worker started; interval=%d seconds",
+            self.current_config().capture.interval_sec,
+        )
+        active_config: Any | None = None
+        client: OpenWebUIClient | None = None
         while not self._stop_event.is_set():
+            cycle_config = self.current_config()
+            if cycle_config is not active_config:
+                client = OpenWebUIClient(cycle_config.openwebui)
+                active_config = cycle_config
+            assert client is not None
             started = time.monotonic()
             try:
-                run_once(self.config, client, state)
+                run_once(cycle_config, client, state)
             except Exception:
                 LOGGER.exception("Capture cycle failed")
             remaining = max(
                 0.0,
-                self.config.capture.interval_sec - (time.monotonic() - started),
+                cycle_config.capture.interval_sec - (time.monotonic() - started),
             )
             if self._stop_event.wait(remaining):
                 break
@@ -190,7 +220,7 @@ class MainWindow(QMainWindow):
         except Exception:
             LOGGER.exception("Could not read Task Scheduler state")
         if start_background and self.config_path.exists() and stored_api_key():
-            self.start_logging()
+            self.start_logging(delay_first_capture=True)
             self.hide()
 
     def _build_ui(self) -> None:
@@ -288,6 +318,21 @@ class MainWindow(QMainWindow):
         settings_layout.addLayout(buttons)
         settings_layout.addStretch()
 
+        prompt_page = QWidget()
+        prompt_layout = QVBoxLayout(prompt_page)
+        prompt_layout.addWidget(
+            QLabel(
+                "画像解析時にsystemロールで送信する指示です。"
+                "時刻・アプリ名・タイトルは別途自動で送信されます。"
+            )
+        )
+        self.system_prompt = QPlainTextEdit()
+        self.system_prompt.setPlaceholderText("解析用システムプロンプト")
+        prompt_layout.addWidget(self.system_prompt)
+        restore_prompt_button = QPushButton("既定のプロンプトに戻す")
+        restore_prompt_button.clicked.connect(self.restore_default_system_prompt)
+        prompt_layout.addWidget(restore_prompt_button)
+
         log_page = QWidget()
         log_layout = QVBoxLayout(log_page)
         self.log_view = QPlainTextEdit()
@@ -298,6 +343,7 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(clear_button)
 
         tabs.addTab(settings_page, "設定")
+        tabs.addTab(prompt_page, "システムプロンプト")
         tabs.addTab(log_page, "ログ")
         self.setCentralWidget(tabs)
 
@@ -361,6 +407,7 @@ class MainWindow(QMainWindow):
             self.model.setCurrentText(str(values["model"]))
             self.timeout_sec.setValue(int(values["timeout_sec"]))
             self.max_tokens.setValue(int(values["max_tokens"]))
+            self.system_prompt.setPlainText(str(values["system_prompt"]))
             self.interval_sec.setValue(int(values["interval_sec"]))
             self.jpeg_quality.setValue(int(values["jpeg_quality"]))
             self.idle_threshold_sec.setValue(int(values["idle_threshold_sec"]))
@@ -392,6 +439,7 @@ class MainWindow(QMainWindow):
             "model": self.model.currentText(),
             "timeout_sec": self.timeout_sec.value(),
             "max_tokens": self.max_tokens.value(),
+            "system_prompt": self.system_prompt.toPlainText(),
             "interval_sec": self.interval_sec.value(),
             "jpeg_quality": self.jpeg_quality.value(),
             "idle_threshold_sec": self.idle_threshold_sec.value(),
@@ -422,6 +470,9 @@ class MainWindow(QMainWindow):
                 scheduler.register(self.config_path)
             elif not self.autostart.isChecked() and registered:
                 scheduler.unregister()
+            if self.worker and self.worker.isRunning():
+                self.worker.update_config(config)
+                LOGGER.info("Updated running worker configuration")
             if show_success:
                 QMessageBox.information(self, "保存完了", "設定を保存しました。")
             return config
@@ -456,14 +507,17 @@ class MainWindow(QMainWindow):
     def _connection_failed(self, message: str) -> None:
         QMessageBox.critical(self, "接続失敗", message)
 
-    def start_logging(self) -> None:
+    def start_logging(
+        self, _checked: bool = False, delay_first_capture: bool = False
+    ) -> None:
         if self.worker and self.worker.isRunning():
             return
         config = self.save_settings(show_success=False)
         if config is None:
             self.show_window()
             return
-        self.worker = ActivityWorker(config)
+        initial_delay = config.capture.interval_sec if delay_first_capture else 0
+        self.worker = ActivityWorker(config, initial_delay_sec=initial_delay)
         self.worker.status_changed.connect(self.status.setText)
         self.worker.finished.connect(self._worker_finished)
         self.worker.start()
@@ -488,6 +542,10 @@ class MainWindow(QMainWindow):
         )
         if selected:
             self.data_dir.setText(selected)
+
+    def restore_default_system_prompt(self) -> None:
+        self.system_prompt.setPlainText(DEFAULT_ANALYSIS_SYSTEM_PROMPT)
+        self.status.setText("既定のプロンプトへ戻しました。設定を保存してください")
 
     def pick_open_window(self) -> None:
         try:

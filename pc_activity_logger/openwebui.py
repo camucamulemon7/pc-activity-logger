@@ -307,18 +307,11 @@ class OpenWebUIClient:
         image_fingerprint = hashlib.sha256(image_bytes).hexdigest()
         image_url = file_id or f"data:image/jpeg;base64,{image_data}"
         user_text = (
-            "添付したWindowsスクリーンショットから、現在の主作業を具体的に分類してください。\n"
+            "次の前面ウィンドウ情報と添付画像を解析してください。\n"
             f"Time: {captured_at.astimezone().isoformat()}\n"
             f"Image fingerprint: {image_fingerprint}\n"
             f"Application: {window.app_name}\n"
-            f"Window title: {window.title}\n"
-            "ApplicationとWindow titleは前面ウィンドウの正しい情報です。画像と矛盾する無関係なアプリを回答しないでください。\n"
-            "activityは『どのサービス/プロジェクトで・何を対象に・何をしているか』を1文で表してください。アプリ名だけの『閲覧』『確認』『作業』は禁止です。\n"
-            "ブラウザならサイト名、ページ/記事/Issue名、対象項目、操作を含めてください。端末ならプロジェクト、コマンド、処理結果またはエラーを含めてください。IDEならリポジトリ、ファイル/設定項目、編集・調査内容を含めてください。\n"
-            "activityは具体的な25～60文字の日本語にしてください。detailは画面に読める非機密な根拠（ページ名、ファイル名、コマンド、エラー、モデル名、指標など）を2～4個含む60～180文字の日本語にしてください。\n"
-            "画面から読めない事実は推測せずconfidenceを下げてください。projectはリポジトリ、作業ディレクトリ、製品または業務名を優先し、判断できない場合だけunknownにしてください。機密情報やメール本文は転記しないでください。\n"
-            "メール画面ではプライバシー保護のため送信者名、件名、本文をdetailへ書かず、受信トレイ等のフォルダ種別と一覧確認・検索・作成等の操作だけを記録してください。\n"
-            "activity, project, category, detail, confidenceを持つJSONだけを返してください。"
+            f"Window title: {window.title}"
         )
         payload = {
             "model": self.config.model,
@@ -334,6 +327,7 @@ class OpenWebUIClient:
                 },
             },
             "messages": [
+                {"role": "system", "content": self.config.system_prompt},
                 {
                     "role": "user",
                     "content": [

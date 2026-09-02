@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from pc_activity_logger.config import load_config
+from pc_activity_logger.prompts import DEFAULT_ANALYSIS_SYSTEM_PROMPT
 
 
 class ConfigTests(unittest.TestCase):
@@ -27,6 +28,9 @@ storage:
             self.assertEqual(config.capture.same_screen_max_distance, 3)
             self.assertEqual(config.capture.same_screen_force_after_sec, 900)
             self.assertTrue(config.capture.skip_unavailable_session)
+            self.assertEqual(
+                config.openwebui.system_prompt, DEFAULT_ANALYSIS_SYSTEM_PROMPT
+            )
 
     def test_rejects_placeholder_key(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -92,6 +96,21 @@ capture:
             )
             with self.assertRaisesRegex(ValueError, "must be a list of strings"):
                 load_config(config_path)
+
+    def test_loads_custom_system_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config_path = Path(temporary) / "config.yaml"
+            config_path.write_text(
+                """openwebui:
+  base_url: http://localhost:8080/api
+  api_key: secret
+  model: vision-model
+  system_prompt: カスタムシステム指示
+""",
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            self.assertEqual(config.openwebui.system_prompt, "カスタムシステム指示")
 
 if __name__ == "__main__":
     unittest.main()

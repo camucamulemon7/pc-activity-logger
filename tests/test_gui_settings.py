@@ -17,6 +17,7 @@ class GuiSettingsTests(unittest.TestCase):
             values["data_dir"] = str(root / "data")
             values["excluded_app_names"] = ["1Password.exe"]
             values["excluded_window_titles"] = ["機密プロジェクト"]
+            values["system_prompt"] = "GUIで変更したシステム指示"
 
             with patch("pc_activity_logger.gui_settings.keyring.set_password") as save:
                 config = save_values(config_path, values, "super-secret")
@@ -25,6 +26,10 @@ class GuiSettingsTests(unittest.TestCase):
             self.assertNotIn("api_key", raw["openwebui"])
             self.assertNotIn("super-secret", config_path.read_text(encoding="utf-8"))
             self.assertEqual(config.openwebui.api_key, "super-secret")
+            self.assertEqual(
+                raw["openwebui"]["system_prompt"],
+                "GUIで変更したシステム指示",
+            )
             self.assertEqual(raw["capture"]["excluded_app_names"], ["1Password.exe"])
             self.assertEqual(
                 raw["capture"]["excluded_window_titles"], ["機密プロジェクト"]
