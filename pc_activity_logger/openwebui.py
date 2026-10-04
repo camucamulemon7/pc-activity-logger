@@ -149,6 +149,17 @@ def _message_text(message: dict[str, Any]) -> str:
         text = content.get("text", content.get("content"))
         if isinstance(text, str) and text.strip():
             return text
+    # Some reasoning-model proxies route constrained JSON to reasoning_content.
+    # Accept only a complete, schema-valid result, never reasoning prose.
+    reasoning = message.get("reasoning_content")
+    if isinstance(reasoning, str):
+        try:
+            value = json.loads(reasoning)
+        except (ValueError, TypeError):
+            value = None
+        if isinstance(value, dict) and value.keys() == REQUIRED_KEYS:
+            _validate(value)
+            return reasoning
     keys = sorted(str(key) for key in message.keys())
     raise ValueError(
         "OpenWebUI message content was unusable "

@@ -97,6 +97,21 @@ class ModelResponseTests(unittest.TestCase):
         )
         self.assertEqual(content, "first\nsecond")
 
+    def test_accepts_schema_valid_json_misrouted_to_reasoning_content(self) -> None:
+        text = '{"activity":"確認","project":"test","category":"other","detail":"合成画像を確認","confidence":0.8}'
+        self.assertEqual(_message_text({"content": "", "reasoning_content": text}), text)
+        self.assertEqual(_message_text({"content": "ordinary", "reasoning_content": text}), "ordinary")
+
+    def test_does_not_accept_reasoning_prose_or_invalid_analysis(self) -> None:
+        for reasoning in (
+            "I should examine the screen before answering.",
+            'Thoughts then {"activity":"確認"}',
+            '{"activity":"確認","project":"test","category":"other","detail":"合成画像","confidence":false}',
+            '{"activity":"確認","project":"test","category":"other","detail":"合成画像","confidence":0.8,"thought":"private reasoning"}',
+        ):
+            with self.subTest(reasoning=reasoning), self.assertRaises(ValueError):
+                _message_text({"content": "", "reasoning_content": reasoning})
+
     def test_retries_null_content_once(self) -> None:
         invalid = Mock(spec=requests.Response)
         invalid.status_code = 200
