@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -111,10 +112,14 @@ def _validate(value: dict[str, Any]) -> Analysis:
     category = value["category"].lower()
     if category not in ALLOWED_CATEGORIES:
         category = "other"
+    if isinstance(value["confidence"], bool):
+        raise ValueError("Model response confidence must be numeric")
     try:
         confidence = float(value["confidence"])
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("Model response confidence must be numeric") from exc
+    if not math.isfinite(confidence):
+        raise ValueError("Model response confidence must be finite")
     return Analysis(
         activity=value["activity"].strip(),
         project=value["project"].strip(),
@@ -163,6 +168,9 @@ class OpenWebUIClient:
             }
         )
         self._note_ids: dict[str, str] = {}
+
+    def close(self) -> None:
+        self.session.close()
 
     @property
     def webui_root(self) -> str:
@@ -262,8 +270,14 @@ class OpenWebUIClient:
         note_id = self._note_ids.get(title)
         note: dict[str, Any] | None = None
         if note_id:
-            note = self._get_note(note_id)
-        else:
+            try:
+                note = self._get_note(note_id)
+            except requests.HTTPError as exc:
+                if exc.response is None or exc.response.status_code != 404:
+                    raise
+                self._note_ids.pop(title, None)
+                note_id = None
+        if not note_id:
             note = self._find_note_by_title(title)
             if note and isinstance(note.get("id"), str):
                 note_id = note["id"]

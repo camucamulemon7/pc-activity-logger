@@ -95,23 +95,33 @@ class ActivityWorker(QThread):
         )
         active_config: Any | None = None
         client: OpenWebUIClient | None = None
-        while not self._stop_event.is_set():
-            cycle_config = self.current_config()
-            if cycle_config is not active_config:
-                client = OpenWebUIClient(cycle_config.openwebui)
-                active_config = cycle_config
-            assert client is not None
-            started = time.monotonic()
-            try:
-                run_once(cycle_config, client, state)
-            except Exception:
-                LOGGER.exception("Capture cycle failed")
-            remaining = max(
-                0.0,
-                cycle_config.capture.interval_sec - (time.monotonic() - started),
-            )
-            if self._stop_event.wait(remaining):
-                break
+        try:
+            while not self._stop_event.is_set():
+                cycle_config = self.current_config()
+                if cycle_config != active_config:
+                    if client is not None:
+                        client.close()
+                        client = None
+                    client = OpenWebUIClient(cycle_config.openwebui)
+                    active_config = cycle_config
+                    # Changed prompts/models/storage require a fresh analysis.
+                    # Saving equal values must preserve the existing hash.
+                    state = CaptureState()
+                assert client is not None
+                started = time.monotonic()
+                try:
+                    run_once(cycle_config, client, state)
+                except Exception:
+                    LOGGER.exception("Capture cycle failed")
+                remaining = max(
+                    0.0,
+                    cycle_config.capture.interval_sec - (time.monotonic() - started),
+                )
+                if self._stop_event.wait(remaining):
+                    break
+        finally:
+            if client is not None:
+                client.close()
         LOGGER.info("GUI worker stopped")
         self.status_changed.emit("停止中")
 
@@ -125,10 +135,15 @@ class ConnectionWorker(QThread):
         self.config = config
 
     def run(self) -> None:
+        client: OpenWebUIClient | None = None
         try:
-            self.succeeded.emit(OpenWebUIClient(self.config.openwebui).list_models())
+            client = OpenWebUIClient(self.config.openwebui)
+            self.succeeded.emit(client.list_models())
         except Exception as exc:
             self.failed.emit(str(exc))
+        finally:
+            if client is not None:
+                client.close()
 
 
 class SignalLogHandler(logging.Handler):
@@ -465,20 +480,27 @@ class MainWindow(QMainWindow):
             config = save_values(
                 self.config_path, self._values(), self.api_key.text()
             )
+            if self.worker and self.worker.isRunning():
+                self.worker.update_config(config)
+                LOGGER.info("Updated running worker configuration")
+        except Exception as exc:
+            QMessageBox.critical(self, "保存エラー", str(exc))
+            return None
+        try:
             registered = scheduler.is_registered()
             if self.autostart.isChecked() and not registered:
                 scheduler.register(self.config_path)
             elif not self.autostart.isChecked() and registered:
                 scheduler.unregister()
-            if self.worker and self.worker.isRunning():
-                self.worker.update_config(config)
-                LOGGER.info("Updated running worker configuration")
             if show_success:
                 QMessageBox.information(self, "保存完了", "設定を保存しました。")
             return config
         except Exception as exc:
-            QMessageBox.critical(self, "保存エラー", str(exc))
-            return None
+            QMessageBox.critical(
+                self, "自動起動設定エラー",
+                f"記録設定は保存されましたが、自動起動設定の更新に失敗しました。\n{exc}",
+            )
+            return config
 
     def test_connection(self) -> None:
         config = self.save_settings(show_success=False)

@@ -128,8 +128,23 @@ def save_values(path: Path, values: dict[str, Any], api_key: str) -> Config:
     )
     try:
         config = load_config(temporary_path, api_key_override=api_key)
+        previous_key = keyring.get_password(CREDENTIAL_SERVICE, CREDENTIAL_ACCOUNT)
         keyring.set_password(CREDENTIAL_SERVICE, CREDENTIAL_ACCOUNT, api_key.strip())
-        temporary_path.replace(path)
+        try:
+            temporary_path.replace(path)
+        except Exception:
+            # Keep credentials consistent with the unchanged config on disk.
+            try:
+                if previous_key is None:
+                    keyring.delete_password(CREDENTIAL_SERVICE, CREDENTIAL_ACCOUNT)
+                else:
+                    keyring.set_password(CREDENTIAL_SERVICE, CREDENTIAL_ACCOUNT, previous_key)
+            except Exception as rollback_error:
+                raise RuntimeError(
+                    "設定ファイルを保存できず、API Keyの復元にも失敗しました。"
+                    "資格情報マネージャーのAPI Keyを確認してください。"
+                ) from rollback_error
+            raise
         return config
     except Exception:
         temporary_path.unlink(missing_ok=True)
