@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -111,10 +112,14 @@ def _validate(value: dict[str, Any]) -> Analysis:
     category = value["category"].lower()
     if category not in ALLOWED_CATEGORIES:
         category = "other"
+    if isinstance(value["confidence"], bool):
+        raise ValueError("Model response confidence must be numeric")
     try:
         confidence = float(value["confidence"])
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("Model response confidence must be numeric") from exc
+    if not math.isfinite(confidence):
+        raise ValueError("Model response confidence must be finite")
     return Analysis(
         activity=value["activity"].strip(),
         project=value["project"].strip(),
@@ -144,6 +149,17 @@ def _message_text(message: dict[str, Any]) -> str:
         text = content.get("text", content.get("content"))
         if isinstance(text, str) and text.strip():
             return text
+    # Some reasoning-model proxies route constrained JSON to reasoning_content.
+    # Accept only a complete, schema-valid result, never reasoning prose.
+    reasoning = message.get("reasoning_content")
+    if isinstance(reasoning, str):
+        try:
+            value = json.loads(reasoning)
+        except (ValueError, TypeError):
+            value = None
+        if isinstance(value, dict) and value.keys() == REQUIRED_KEYS:
+            _validate(value)
+            return reasoning
     keys = sorted(str(key) for key in message.keys())
     raise ValueError(
         "OpenWebUI message content was unusable "
@@ -163,6 +179,9 @@ class OpenWebUIClient:
             }
         )
         self._note_ids: dict[str, str] = {}
+
+    def close(self) -> None:
+        self.session.close()
 
     @property
     def webui_root(self) -> str:
@@ -262,8 +281,14 @@ class OpenWebUIClient:
         note_id = self._note_ids.get(title)
         note: dict[str, Any] | None = None
         if note_id:
-            note = self._get_note(note_id)
-        else:
+            try:
+                note = self._get_note(note_id)
+            except requests.HTTPError as exc:
+                if exc.response is None or exc.response.status_code != 404:
+                    raise
+                self._note_ids.pop(title, None)
+                note_id = None
+        if not note_id:
             note = self._find_note_by_title(title)
             if note and isinstance(note.get("id"), str):
                 note_id = note["id"]

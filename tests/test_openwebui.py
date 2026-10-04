@@ -1,5 +1,6 @@
 import unittest
-from unittest.mock import Mock
+from datetime import datetime
+from unittest.mock import Mock, patch
 
 import requests
 
@@ -65,6 +66,16 @@ class ModelResponseTests(unittest.TestCase):
                 }
             )
 
+    def test_validation_rejects_nonfinite_or_boolean_confidence(self) -> None:
+        for confidence in (float("nan"), float("inf"), -float("inf"),
+                           "NaN", "Infinity", True, False, 10 ** 400):
+            with self.subTest(confidence=confidence):
+                with self.assertRaisesRegex(ValueError, "confidence"):
+                    _validate({
+                        "activity": "確認", "project": "p", "category": "research",
+                        "detail": "詳細を確認している", "confidence": confidence,
+                    })
+
     def test_extracts_json_surrounded_by_model_commentary(self) -> None:
         value = _extract_json(
             'Result:\n{"activity":"確認","project":"p","category":"development",'
@@ -85,6 +96,21 @@ class ModelResponseTests(unittest.TestCase):
             {"content": [{"type": "text", "text": "first"}, {"text": "second"}]}
         )
         self.assertEqual(content, "first\nsecond")
+
+    def test_accepts_schema_valid_json_misrouted_to_reasoning_content(self) -> None:
+        text = '{"activity":"確認","project":"test","category":"other","detail":"合成画像を確認","confidence":0.8}'
+        self.assertEqual(_message_text({"content": "", "reasoning_content": text}), text)
+        self.assertEqual(_message_text({"content": "ordinary", "reasoning_content": text}), "ordinary")
+
+    def test_does_not_accept_reasoning_prose_or_invalid_analysis(self) -> None:
+        for reasoning in (
+            "I should examine the screen before answering.",
+            'Thoughts then {"activity":"確認"}',
+            '{"activity":"確認","project":"test","category":"other","detail":"合成画像","confidence":false}',
+            '{"activity":"確認","project":"test","category":"other","detail":"合成画像","confidence":0.8,"thought":"private reasoning"}',
+        ):
+            with self.subTest(reasoning=reasoning), self.assertRaises(ValueError):
+                _message_text({"content": "", "reasoning_content": reasoning})
 
     def test_retries_null_content_once(self) -> None:
         invalid = Mock(spec=requests.Response)
@@ -219,6 +245,50 @@ class ModelResponseTests(unittest.TestCase):
         markdown = request.kwargs["json"]["data"]["content"]["md"]
         self.assertIn("モデル利用量を確認", markdown)
         self.assertIn("23:00:00", markdown)
+
+    def test_deleted_cached_note_is_rediscovered_or_recreated(self) -> None:
+        for replacement in (None, {"id": "replacement"}):
+            with self.subTest(replacement=replacement):
+                client = OpenWebUIClient(OpenWebUIConfig("http://localhost/api", "test", "model"))
+                captured_at = datetime.now().astimezone()
+                title = f"記録 {captured_at.date().isoformat()}"
+                client._note_ids[title] = "deleted"
+                response = Mock(status_code=404)
+                error = requests.HTTPError("deleted", response=response)
+                existing = {"id": "replacement", "data": {"content": {"md": "existing"}}}
+                client.session.post = Mock()
+                client.session.post.return_value.json.return_value = {"id": "created"}
+                window = ActiveWindow(0, "synthetic", "test.exe", {})
+                with patch.object(client, "_get_note", side_effect=[error, existing]), patch.object(
+                    client, "_find_note_by_title", return_value=replacement
+                ) as find:
+                    result = client.append_daily_note(
+                        captured_at, window, Analysis("確認", "p", "other", "詳細", .8), "記録"
+                    )
+                find.assert_called_once_with(title)
+                self.assertEqual(result, "replacement" if replacement else "created")
+                self.assertEqual(client._note_ids[title], result)
+                endpoint = client.session.post.call_args.args[0]
+                self.assertTrue(endpoint.endswith("/replacement/update" if replacement else "/create"))
+
+    def test_cached_note_auth_failure_does_not_create_duplicate(self) -> None:
+        client = OpenWebUIClient(OpenWebUIConfig("http://localhost/api", "test", "model"))
+        captured_at = datetime.now().astimezone()
+        title = f"記録 {captured_at.date().isoformat()}"
+        client._note_ids[title] = "cached"
+        error = requests.HTTPError("forbidden", response=Mock(status_code=403))
+        client.session.post = Mock()
+        with patch.object(client, "_get_note", side_effect=error), patch.object(
+            client, "_find_note_by_title"
+        ) as find:
+            with self.assertRaises(requests.HTTPError):
+                client.append_daily_note(
+                    captured_at, ActiveWindow(0, "test", "test.exe", {}),
+                    Analysis("確認", "p", "other", "詳細", .8), "記録"
+                )
+        client.session.post.assert_not_called()
+        find.assert_not_called()
+        self.assertEqual(client._note_ids[title], "cached")
 
     def test_uploads_and_deletes_temporary_image(self) -> None:
         uploaded = Mock(spec=requests.Response)
