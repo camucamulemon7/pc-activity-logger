@@ -350,6 +350,10 @@ JSONLの例：
 
 GUIを含む全依存関係が必要なため、先に`requirements-gui.txt`をインストールしてください。
 
+GitHub ActionsのCIはpushとpull requestで起動し、Linux（Ubuntu）とWindowsの両方でPython 3.10・3.12を使って同じ全テストを実行します。依存関係の整合性とPythonソースのコンパイルも確認します。GUI関連テストは`QT_QPA_PLATFORM=offscreen`で実行し、APIキーや実OpenWebUIは不要です。
+
+テストは合成画像と一時ディレクトリを使い、画面取得、OpenWebUI通信、Credential Manager、タスクスケジューラをモックします。OSによるテストのskipはありません。Windowsジョブの成功は、実デスクトップの撮影、ロック・切断状態の判定、システムトレイ、ログオン時の起動、Credential Managerへの実保存、EXEのビルド・実行を保証しません。これらはWindows実機で別途確認してください。Outlookとの実連携は本プロジェクトのCI対象に含まれません。
+
 ## トラブルシューティング
 
 ### `400 Bad Request`
