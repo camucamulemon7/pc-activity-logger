@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from PySide6.QtCore import QCoreApplication
+
 from pc_activity_logger.markdown import ExportResult
 from pc_activity_logger.main import CycleResult
 from pc_activity_logger.gui import ActivityWorker, ConnectionWorker, ExportWorker, MainWindow, ReportWorker
@@ -12,6 +14,11 @@ from datetime import date
 
 
 class ActivityWorkerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        # QThread signals need a Qt application, also when run() is called inline.
+        cls.application = QCoreApplication.instance() or QCoreApplication([])
+
     def test_report_worker_emits_summary_and_reports_failure(self) -> None:
         for failure in (False, True):
             worker = ReportWorker(Path("data"), date(2026, 10, 14), Path("vault"), 300)
