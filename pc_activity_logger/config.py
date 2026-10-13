@@ -17,6 +17,10 @@ class OpenWebUIConfig:
     timeout_sec: int = 120
     max_tokens: int = 1024
     system_prompt: str = DEFAULT_ANALYSIS_SYSTEM_PROMPT
+    max_retries: int = 2
+    retry_backoff_sec: int = 1
+    cleanup_temporary_files: bool = True
+    temporary_file_max_age_hours: int = 24
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,9 @@ class StorageConfig:
     data_dir: Path = Path("data")
     markdown_enabled: bool = True
     obsidian_vault: Path | None = None
+    retention_days: int = 14
+    save_monitor_screenshot: bool = False
+    reports_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -119,6 +126,18 @@ def load_config(path: Path, api_key_override: str | None = None) -> Config:
     timeout = _integer(ow, "timeout_sec", 120, "openwebui")
     max_tokens = _integer(ow, "max_tokens", 1024, "openwebui")
     system_prompt = ow.get("system_prompt", DEFAULT_ANALYSIS_SYSTEM_PROMPT)
+    max_retries = _integer(ow, "max_retries", 2, "openwebui")
+    retry_backoff = _integer(ow, "retry_backoff_sec", 1, "openwebui")
+    temporary_file_age = _integer(ow, "temporary_file_max_age_hours", 24, "openwebui")
+    cleanup_files = ow.get("cleanup_temporary_files", True)
+    if not 0 <= max_retries <= 5:
+        raise ValueError("openwebui.max_retries must be between 0 and 5")
+    if not 0 <= retry_backoff <= 30:
+        raise ValueError("openwebui.retry_backoff_sec must be between 0 and 30")
+    if temporary_file_age < 1:
+        raise ValueError("openwebui.temporary_file_max_age_hours must be at least 1")
+    if not isinstance(cleanup_files, bool):
+        raise ValueError("openwebui.cleanup_temporary_files must be true or false")
     if interval < 1:
         raise ValueError("capture.interval_sec must be at least 1")
     if startup_delay_min < 0:
@@ -151,6 +170,13 @@ def load_config(path: Path, api_key_override: str | None = None) -> Config:
     if not data_dir.is_absolute():
         data_dir = config_dir / data_dir
     markdown_enabled = storage.get("markdown_enabled", True)
+    retention_days = _integer(storage, "retention_days", 14, "storage")
+    save_monitor = storage.get("save_monitor_screenshot", False)
+    reports_enabled = storage.get("reports_enabled", False)
+    if not isinstance(reports_enabled, bool):
+        raise ValueError("storage.reports_enabled must be true or false")
+    if not isinstance(save_monitor, bool):
+        raise ValueError("storage.save_monitor_screenshot must be true or false")
     if not isinstance(markdown_enabled, bool):
         raise ValueError("storage.markdown_enabled must be true or false")
     vault_value = storage.get("obsidian_vault")
@@ -176,6 +202,10 @@ def load_config(path: Path, api_key_override: str | None = None) -> Config:
             timeout_sec=timeout,
             max_tokens=max_tokens,
             system_prompt=system_prompt.strip(),
+            max_retries=max_retries,
+            retry_backoff_sec=retry_backoff,
+            cleanup_temporary_files=cleanup_files,
+            temporary_file_max_age_hours=temporary_file_age,
         ),
         capture=CaptureConfig(
             interval_sec=interval,
@@ -191,6 +221,9 @@ def load_config(path: Path, api_key_override: str | None = None) -> Config:
         ),
         storage=StorageConfig(
             data_dir=data_dir, markdown_enabled=markdown_enabled, obsidian_vault=obsidian_vault,
+            retention_days=retention_days,
+            save_monitor_screenshot=save_monitor,
+            reports_enabled=reports_enabled,
         ),
         notes=NotesConfig(enabled=notes_enabled, title_prefix=title_prefix.strip()),
     )

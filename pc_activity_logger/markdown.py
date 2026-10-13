@@ -3,16 +3,17 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-import math
 import os
 import re
 import tempfile
 import unicodedata
-from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .history import read_history, record_timestamp as _timestamp, validate_record as _validate_record
 
 
 EXPORT_FOLDER = "PC Activity Logger"
@@ -46,38 +47,6 @@ def _safe_name(value: str, *, tag: bool = False) -> str:
     return name
 
 
-def _timestamp(record: dict[str, Any]) -> datetime:
-    value = record.get("timestamp")
-    if not isinstance(value, str):
-        raise ValueError("timestamp must be an ISO 8601 string")
-    try:
-        # Python 3.10 does not accept the UTC 'Z' suffix in fromisoformat.
-        return datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
-    except ValueError as exc:
-        raise ValueError("timestamp must be an ISO 8601 string") from exc
-
-
-def _validate_record(record: dict[str, Any]) -> None:
-    _timestamp(record)
-    for field in ("activity", "detail"):
-        value = record.get(field)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"{field} must be a non-empty string")
-    for field in ("project", "category", "app_name", "window_title",
-                  "screenshot", "monitor_screenshot"):
-        if field in record and not isinstance(record[field], str):
-            raise ValueError(f"{field} must be a string")
-    confidence = record.get("confidence")
-    if (isinstance(confidence, bool) or not isinstance(confidence, (int, float))
-            or not math.isfinite(confidence) or not 0 <= confidence <= 1):
-        raise ValueError("confidence must be a finite number between 0 and 1")
-    keywords = record.get("keywords", [])
-    if (not isinstance(keywords, list) or len(keywords) > 8
-            or any(not isinstance(word, str) or not word.strip() or len(word) > 64
-                   for word in keywords)):
-        raise ValueError("keywords must be a list of at most 8 non-empty strings (64 characters each)")
-
-
 def _entities(record: dict[str, Any]) -> list[tuple[str, str]]:
     entities = [("Days", _timestamp(record).date().isoformat())]
     for folder, field in (("Projects", "project"), ("Apps", "app_name"),
@@ -100,7 +69,7 @@ def _entity_path(folder: str, value: str) -> Path:
 def _wikilink(folder: str, value: str) -> str:
     label = re.sub(r"[\[\]|#^\r\n]", " ", value)
     label = html.escape(" ".join(label.split()), quote=False)
-    return f"[[{_entity_path(folder, value).as_posix()}|{label}]]"
+    return f"[[{_entity_path(folder, value).with_suffix('').as_posix()}|{label}]]"
 
 
 def _record_path(record: dict[str, Any]) -> Path:
@@ -194,32 +163,18 @@ def write_activity_markdown(record: dict[str, Any], vault: Path) -> Path:
     return path
 
 
-def export_markdown(source: Path, vault: Path) -> int:
+@dataclass(frozen=True)
+class ExportResult:
+    exported: int
+    skipped: int
+
+
+def export_markdown(source: Path, vault: Path, *, strict: bool = False) -> ExportResult:
     """Export a JSONL file or history directory into an Obsidian vault."""
     source, vault = Path(source), Path(vault)
-    if not source.exists():
-        raise FileNotFoundError(f"History not found: {source}")
     if vault.exists() and not vault.is_dir():
         raise ValueError("Obsidian output must be a directory")
-    paths = sorted(source.rglob("activity.jsonl")) if source.is_dir() else [source]
-    if not paths:
-        raise ValueError(f"No activity.jsonl history found in {source}")
-    records: list[dict[str, Any]] = []
-    for path in paths:
-        with path.open("r", encoding="utf-8-sig") as input_file:
-            for line_number, line in enumerate(input_file, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                    if not isinstance(record, dict):
-                        raise ValueError("record must be a JSON object")
-                    _validate_record(record)
-                except (ValueError, OverflowError) as exc:
-                    raise ValueError(
-                        f"{path}: line {line_number}: invalid activity record ({exc})"
-                    ) from exc
-                records.append(record)
-    for record in records:
+    history = read_history(source, strict=strict)
+    for record in history.records:
         write_activity_markdown(record, vault)
-    return len(records)
+    return ExportResult(len(history.records), history.skipped)

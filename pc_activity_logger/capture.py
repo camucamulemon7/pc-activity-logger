@@ -6,6 +6,24 @@ from mss import mss
 from PIL import Image
 
 
+class UnsafeCaptureError(ValueError):
+    """No sufficiently large, confirmed foreground region is available."""
+
+
+def active_window_crop_box(
+    monitor: dict[str, int], window_rect: dict[str, int] | None,
+) -> tuple[int, int, int, int]:
+    if not window_rect:
+        raise UnsafeCaptureError("Foreground window bounds are unavailable")
+    left = max(monitor["left"], window_rect["left"])
+    top = max(monitor["top"], window_rect["top"])
+    right = min(monitor["left"] + monitor["width"], window_rect["left"] + window_rect["width"])
+    bottom = min(monitor["top"] + monitor["height"], window_rect["top"] + window_rect["height"])
+    if right - left < 100 or bottom - top < 100:
+        raise UnsafeCaptureError("Foreground region is smaller than 100 by 100 pixels")
+    return left - monitor["left"], top - monitor["top"], right - monitor["left"], bottom - monitor["top"]
+
+
 def capture_monitor(monitor: dict[str, int], jpeg_quality: int) -> bytes:
     with mss() as screen:
         shot = screen.grab(monitor)
@@ -22,27 +40,7 @@ def crop_to_active_window(
     jpeg_quality: int,
 ) -> bytes:
     """Crop a monitor image to the visible foreground-window intersection."""
-    if not window_rect:
-        return monitor_image
-
-    monitor_right = monitor["left"] + monitor["width"]
-    monitor_bottom = monitor["top"] + monitor["height"]
-    window_right = window_rect["left"] + window_rect["width"]
-    window_bottom = window_rect["top"] + window_rect["height"]
-
-    left = max(monitor["left"], window_rect["left"])
-    top = max(monitor["top"], window_rect["top"])
-    right = min(monitor_right, window_right)
-    bottom = min(monitor_bottom, window_bottom)
-    if right - left < 100 or bottom - top < 100:
-        return monitor_image
-
-    crop_box = (
-        left - monitor["left"],
-        top - monitor["top"],
-        right - monitor["left"],
-        bottom - monitor["top"],
-    )
+    crop_box = active_window_crop_box(monitor, window_rect)
     with Image.open(BytesIO(monitor_image)) as image:
         cropped = image.crop(crop_box)
         output = BytesIO()

@@ -24,6 +24,20 @@ def activity_record(**changes):
 
 
 class MarkdownTests(unittest.TestCase):
+    def test_corrupt_and_non_utf8_lines_are_skipped_with_counts_and_no_sensitive_log(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source, vault = Path(temporary) / "activity.jsonl", Path(temporary) / "vault"
+            source.write_bytes((json.dumps(activity_record()) + "\n").encode() +
+                b'{private-broken-content}\n\xff\n' +
+                (json.dumps(activity_record(activity="後続の正常な記録")) + "\n").encode())
+            with self.assertLogs("pc_activity_logger", level="WARNING") as logs:
+                result = export_markdown(source, vault)
+            self.assertEqual((result.exported, result.skipped), (2, 2))
+            self.assertIn("line 2", " ".join(logs.output))
+            self.assertIn("line 3", " ".join(logs.output))
+            self.assertNotIn("private-broken-content", " ".join(logs.output))
+            self.assertEqual(len(list((vault / "PC Activity Logger" / "Records").rglob("*.md"))), 2)
+
     def test_one_note_per_record_with_properties_and_resolvable_graph_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -31,7 +45,7 @@ class MarkdownTests(unittest.TestCase):
             records = [activity_record(), activity_record(timestamp="2026-10-13T15:00:00Z")]
             original = "\n".join(json.dumps(item, ensure_ascii=False) for item in records)
             source.write_text(original, encoding="utf-8-sig")
-            self.assertEqual(export_markdown(source, vault), 2)
+            self.assertEqual(export_markdown(source, vault).exported, 2)
             notes = list((vault / "PC Activity Logger" / "Records").rglob("*.md"))
             self.assertEqual(len(notes), 2)
             offsets = set()
@@ -43,7 +57,8 @@ class MarkdownTests(unittest.TestCase):
                 self.assertIn("keyword/ナレッジグラフ", properties["tags"])
                 self.assertIn("日本語の作業履歴を確認\nMarkdownへ変換", text)
                 for link in re.findall(r"\[\[([^|]+)\|[^\]]+\]\]", text):
-                    self.assertTrue((vault / link).is_file(), link)
+                    self.assertFalse(link.endswith(".md"))
+                    self.assertTrue((vault / (link + ".md")).is_file(), link)
             self.assertEqual(offsets, {record["timestamp"] for record in records})
             self.assertEqual(len(list((vault / "PC Activity Logger" / "Topics").glob("python.md"))), 1)
             self.assertEqual(source.read_text(encoding="utf-8-sig"), original)
@@ -59,7 +74,7 @@ class MarkdownTests(unittest.TestCase):
             with source.open("a", encoding="utf-8") as output:
                 output.write(json.dumps(activity_record(activity="追加の記録")) + "\n")
             for _ in range(2):
-                self.assertEqual(export_markdown(source, vault), 2)
+                self.assertEqual(export_markdown(source, vault).exported, 2)
                 self.assertEqual(len(list((vault / "PC Activity Logger" / "Records").rglob("*.md"))), 2)
                 self.assertIn("手動の追記", note.read_text(encoding="utf-8"))
 
@@ -82,8 +97,8 @@ class MarkdownTests(unittest.TestCase):
                 self.assertRegex(tag, r"^[\w/-]+$")
             for link in properties["related"]:
                 target = link[2:-2].split("|", 1)[0]
-                self.assertTrue((vault / target).resolve().is_relative_to(vault.resolve()))
-                self.assertTrue((vault / target).is_file())
+                self.assertTrue((vault / (target + ".md")).resolve().is_relative_to(vault.resolve()))
+                self.assertTrue((vault / (target + ".md")).is_file())
             topics = list((vault / "PC Activity Logger" / "Topics").glob("*.md"))
             self.assertEqual(len(topics), 6)  # Python width/case variants share a node.
 
@@ -103,7 +118,7 @@ class MarkdownTests(unittest.TestCase):
                     original = json.dumps(activity_record()) + "\n" + invalid + "\n"
                     source.write_text(original, encoding="utf-8")
                     with self.assertRaisesRegex(ValueError, "line 2: invalid activity record"):
-                        export_markdown(source, vault)
+                        export_markdown(source, vault, strict=True)
                     self.assertEqual(source.read_text(encoding="utf-8"), original)
                     self.assertEqual(existing.read_text(encoding="utf-8"), "personal notes")
                     self.assertEqual(list(vault.iterdir()), [existing])
@@ -129,7 +144,7 @@ class MarkdownTests(unittest.TestCase):
                 export_markdown(source, vault)
             self.assertFalse(vault.exists())
             source.write_text("\n", encoding="utf-8")
-            self.assertEqual(export_markdown(source, vault), 0)
+            self.assertEqual(export_markdown(source, vault).exported, 0)
             source.write_text(json.dumps(activity_record()), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "must be a directory"):
                 export_markdown(source, source)
@@ -144,7 +159,7 @@ class MarkdownTests(unittest.TestCase):
                 del record["keywords"]
                 source.write_text(json.dumps(record), encoding="utf-8")
             vault = root / "vault"
-            self.assertEqual(export_markdown(root / "data", vault), 2)
+            self.assertEqual(export_markdown(root / "data", vault).exported, 2)
             self.assertEqual(len(list((vault / "PC Activity Logger" / "Records").rglob("*.md"))), 2)
             self.assertFalse((vault / "PC Activity Logger" / "Topics").exists())
 

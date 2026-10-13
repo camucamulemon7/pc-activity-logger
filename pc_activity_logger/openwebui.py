@@ -7,10 +7,13 @@ import json
 import logging
 import math
 import re
+import time
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
+from uuid import uuid4
 
 import requests
 
@@ -20,6 +23,8 @@ from .windows import ActiveWindow
 
 LOGGER = logging.getLogger("pc_activity_logger")
 OPENWEBUI_CLIENT_USER_AGENT = "pc-activity-logger"
+RETRY_STATUSES = {429, 502, 503, 504}
+TEMPORARY_IMAGE_NAME = re.compile(r"pc-activity-\d{8}-\d{6}(?:-[a-f0-9]{32})?\.jpg\Z")
 
 
 REQUIRED_KEYS = {"activity", "project", "category", "detail", "confidence"}
@@ -202,6 +207,33 @@ class OpenWebUIClient:
             }
         )
         self._note_ids: dict[str, str] = {}
+        self._temporary_file_ids: set[str] = set()
+
+    def _request(self, method: str, url: str, *, retry: bool = True, **kwargs: Any) -> requests.Response:
+        kwargs.setdefault("timeout", self.config.timeout_sec)
+        retries = self.config.max_retries if retry else 0
+        for attempt in range(retries + 1):
+            retry_after = 0.0
+            try:
+                response = getattr(self.session, method)(url, **kwargs)
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt >= retries:
+                    raise
+            else:
+                if response.status_code not in RETRY_STATUSES or attempt >= retries:
+                    return response
+                try:
+                    retry_after = float(response.headers.get("Retry-After", "0"))
+                    if not math.isfinite(retry_after):
+                        retry_after = 0.0
+                except (ValueError, TypeError):
+                    retry_after = 0.0
+                response.close()
+            delay = min(30.0, max(retry_after, self.config.retry_backoff_sec * (2 ** attempt)))
+            LOGGER.warning("Transient OpenWebUI %s failure; retry %d/%d in %.1f seconds",
+                           method.upper(), attempt + 1, retries, delay)
+            time.sleep(delay)
+        raise AssertionError("Unreachable request retry state")
 
     def close(self) -> None:
         self.session.close()
@@ -217,7 +249,7 @@ class OpenWebUIClient:
         return f"{self.webui_root}/api/v1/files{suffix}"
 
     def list_models(self) -> list[str]:
-        response = self.session.get(
+        response = self._request("get",
             f"{self.config.base_url}/models", timeout=self.config.timeout_sec
         )
         _raise_for_status(response)
@@ -236,9 +268,10 @@ class OpenWebUIClient:
     def upload_temporary_image(
         self, image_bytes: bytes, captured_at: datetime
     ) -> str:
-        filename = captured_at.astimezone().strftime("pc-activity-%Y%m%d-%H%M%S.jpg")
-        response = self.session.post(
+        filename = captured_at.astimezone().strftime("pc-activity-%Y%m%d-%H%M%S") + f"-{uuid4().hex}.jpg"
+        response = self._request("post",
             self._files_url("/"),
+            retry=False,  # A lost upload response must not create duplicate remote files.
             params={"process": "false"},
             files={"file": (filename, image_bytes, "image/jpeg")},
             timeout=self.config.timeout_sec,
@@ -248,16 +281,78 @@ class OpenWebUIClient:
         file_id = data.get("id") if isinstance(data, dict) else None
         if not isinstance(file_id, str) or not file_id:
             raise ValueError("OpenWebUI did not return a File ID")
+        self._temporary_file_ids.add(file_id)
         return file_id
 
     def delete_file(self, file_id: str) -> None:
-        response = self.session.delete(
-            self._files_url(f"/{file_id}"), timeout=self.config.timeout_sec
+        response = self._request("delete",
+            self._files_url(f"/{quote(file_id, safe='')}"), timeout=self.config.timeout_sec
         )
+        if response.status_code != 404:
+            _raise_for_status(response)
+        self._temporary_file_ids.discard(file_id)
+
+    def release_temporary_image(self, file_id: str) -> None:
+        """Allow maintenance to recover a finished upload whose deletion failed."""
+        self._temporary_file_ids.discard(file_id)
+
+    def cleanup_temporary_files(self, now: datetime | None = None) -> int:
+        """Delete only old, owned logger images, collecting pages before deleting."""
+        response = self._request("get", f"{self.webui_root}/api/v1/auths/")
         _raise_for_status(response)
+        user = response.json()
+        owner = user.get("id") if isinstance(user, dict) else None
+        if not isinstance(owner, str) or not owner:
+            raise ValueError("OpenWebUI did not return the authenticated user ID")
+        current = (now or datetime.now(timezone.utc)).timestamp()
+        cutoff = current - self.config.temporary_file_max_age_hours * 3600
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for page in range(1, 101):
+            response = self._request("get", self._files_url("/"), params={"page": page, "content": "false"})
+            _raise_for_status(response)
+            payload = response.json()
+            items = payload.get("items") if isinstance(payload, dict) else payload
+            if not isinstance(items, list):
+                raise ValueError("Unexpected OpenWebUI Files list response")
+            new_ids = 0
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                file_id = item.get("id")
+                if not isinstance(file_id, str) or not file_id or file_id in seen:
+                    continue
+                seen.add(file_id)
+                new_ids += 1
+                if (item.get("user_id") != owner or file_id in self._temporary_file_ids
+                        or not isinstance(item.get("filename"), str)
+                        or not TEMPORARY_IMAGE_NAME.fullmatch(item["filename"])):
+                    continue
+                created = item.get("created_at")
+                if isinstance(created, bool) or not isinstance(created, (int, float)):
+                    continue
+                try:
+                    old_enough = math.isfinite(created) and 0 < created < cutoff
+                except OverflowError:
+                    old_enough = False
+                if old_enough:
+                    candidates.append(file_id)
+            if not items or not new_ids or isinstance(payload, list):
+                break
+            total = payload.get("total")
+            if isinstance(total, int) and len(seen) >= total:
+                break
+        removed = 0
+        for file_id in candidates:
+            try:
+                self.delete_file(file_id)
+                removed += 1
+            except requests.RequestException:
+                LOGGER.warning("Could not delete an expired OpenWebUI logger image", exc_info=True)
+        return removed
 
     def _find_note_by_title(self, title: str) -> dict[str, Any] | None:
-        response = self.session.get(
+        response = self._request("get",
             self._notes_url("/"), timeout=self.config.timeout_sec
         )
         _raise_for_status(response)
@@ -271,7 +366,7 @@ class OpenWebUIClient:
         return None
 
     def _get_note(self, note_id: str) -> dict[str, Any]:
-        response = self.session.get(
+        response = self._request("get",
             self._notes_url(f"/{note_id}"), timeout=self.config.timeout_sec
         )
         _raise_for_status(response)
@@ -323,15 +418,16 @@ class OpenWebUIClient:
                 content = ""
             if marker not in content:
                 new_content = content.rstrip() + "\n\n" + entry if content.strip() else entry
-                response = self.session.post(
+                response = self._request("post",
                     self._notes_url(f"/{note_id}/update"),
                     json={"title": title, "data": {"content": {"md": new_content}}},
                     timeout=self.config.timeout_sec,
                 )
                 _raise_for_status(response)
         else:
-            response = self.session.post(
+            response = self._request("post",
                 self._notes_url("/create"),
+                retry=False,  # Note creation has no idempotency key.
                 json={"title": title, "data": {"content": {"md": f"# {title}\n\n{entry}"}}},
                 timeout=self.config.timeout_sec,
             )
@@ -351,9 +447,8 @@ class OpenWebUIClient:
         window: ActiveWindow,
         file_id: str | None = None,
     ) -> Analysis:
-        image_data = base64.b64encode(image_bytes).decode("ascii")
         image_fingerprint = hashlib.sha256(image_bytes).hexdigest()
-        image_url = file_id or f"data:image/jpeg;base64,{image_data}"
+        image_url = file_id or f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('ascii')}"
         user_text = (
             "次の前面ウィンドウ情報と添付画像を解析してください。\n"
             f"Time: {captured_at.astimezone().isoformat()}\n"
@@ -395,7 +490,7 @@ class OpenWebUIClient:
         last_error: ValueError | None = None
         for attempt in range(2):
             response_text: str | None = None
-            response = self.session.post(
+            response = self._request("post",
                 f"{self.config.base_url}/chat/completions",
                 json=copy.deepcopy(payload),
                 timeout=self.config.timeout_sec,

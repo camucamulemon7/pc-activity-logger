@@ -4,6 +4,10 @@ openwebui:
   model: "gemma-4-31B-it"
   timeout_sec: 120
   max_tokens: 1024
+  max_retries: 2
+  retry_backoff_sec: 1
+  cleanup_temporary_files: true
+  temporary_file_max_age_hours: 24
 
 capture:
   interval_sec: 180
@@ -20,6 +24,9 @@ capture:
 storage:
   data_dir: "data"
   markdown_enabled: true
+  retention_days: 14
+  save_monitor_screenshot: false
+  reports_enabled: false
   # Existing Obsidian vault root; omit to use data_dir/obsidian.
   # obsidian_vault: "C:/Users/USER/Documents/MyVault"
 

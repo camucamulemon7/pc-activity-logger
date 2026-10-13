@@ -34,6 +34,10 @@ def default_values() -> dict[str, Any]:
         "timeout_sec": 120,
         "max_tokens": 1024,
         "system_prompt": DEFAULT_ANALYSIS_SYSTEM_PROMPT,
+        "max_retries": 2,
+        "retry_backoff_sec": 1,
+        "cleanup_temporary_files": True,
+        "temporary_file_max_age_hours": 24,
         "interval_sec": 180,
         "startup_delay_min": 3,
         "jpeg_quality": 80,
@@ -46,6 +50,9 @@ def default_values() -> dict[str, Any]:
         "excluded_window_titles": [],
         "data_dir": str(app_dir / "data"),
         "markdown_enabled": True,
+        "retention_days": 14,
+        "save_monitor_screenshot": False,
+        "reports_enabled": False,
         "obsidian_vault": str(app_dir / "data" / "obsidian"),
         "notes_enabled": True,
         "notes_title_prefix": "PC作業記録",
@@ -65,7 +72,8 @@ def read_values(path: Path) -> dict[str, Any]:
     notes = raw.get("notes", {})
     if not all(isinstance(section, dict) for section in (ow, capture, storage, notes)):
         raise ValueError("GUI config sections must be YAML mappings")
-    for key in ("base_url", "model", "timeout_sec", "max_tokens", "system_prompt"):
+    for key in ("base_url", "model", "timeout_sec", "max_tokens", "system_prompt",
+                "max_retries", "retry_backoff_sec", "cleanup_temporary_files", "temporary_file_max_age_hours"):
         if key in ow:
             values[key] = ow[key]
     for key in (
@@ -89,6 +97,12 @@ def read_values(path: Path) -> dict[str, Any]:
         values["data_dir"] = str(data_dir)
     if "markdown_enabled" in storage:
         values["markdown_enabled"] = storage["markdown_enabled"]
+    if "retention_days" in storage:
+        values["retention_days"] = storage["retention_days"]
+    if "save_monitor_screenshot" in storage:
+        values["save_monitor_screenshot"] = storage["save_monitor_screenshot"]
+    if "reports_enabled" in storage:
+        values["reports_enabled"] = storage["reports_enabled"]
     vault = Path(str(storage.get("obsidian_vault") or Path(values["data_dir"]) / "obsidian"))
     if not vault.is_absolute():
         vault = path.resolve().parent / vault
@@ -113,6 +127,10 @@ def save_values(path: Path, values: dict[str, Any], api_key: str) -> Config:
             "timeout_sec": int(values["timeout_sec"]),
             "max_tokens": int(values["max_tokens"]),
             "system_prompt": str(values["system_prompt"]).strip(),
+            "max_retries": int(values.get("max_retries", 2)),
+            "retry_backoff_sec": int(values.get("retry_backoff_sec", 1)),
+            "cleanup_temporary_files": bool(values.get("cleanup_temporary_files", True)),
+            "temporary_file_max_age_hours": int(values.get("temporary_file_max_age_hours", 24)),
         },
         "capture": {
             "interval_sec": int(values["interval_sec"]),
@@ -131,6 +149,9 @@ def save_values(path: Path, values: dict[str, Any], api_key: str) -> Config:
         "storage": {
             "data_dir": str(data_dir),
             "markdown_enabled": bool(values.get("markdown_enabled", True)),
+            "retention_days": int(values.get("retention_days", 14)),
+            "save_monitor_screenshot": bool(values.get("save_monitor_screenshot", False)),
+            "reports_enabled": bool(values.get("reports_enabled", False)),
             "obsidian_vault": str(vault),
         },
         "notes": {

@@ -1,12 +1,89 @@
 import unittest
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from pc_activity_logger.gui import ActivityWorker, ConnectionWorker, ExportWorker, MainWindow
+from PySide6.QtCore import QCoreApplication
+
+from pc_activity_logger.markdown import ExportResult
+from pc_activity_logger.main import CycleResult
+from pc_activity_logger.gui import ActivityWorker, ConnectionWorker, ExportWorker, MainWindow, ReportWorker
+from pc_activity_logger.report import ReportResult
+from datetime import date
 
 
 class ActivityWorkerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        # QThread signals need a Qt application, also when run() is called inline.
+        cls.application = QCoreApplication.instance() or QCoreApplication([])
+
+    def test_report_worker_emits_summary_and_reports_failure(self) -> None:
+        for failure in (False, True):
+            worker = ReportWorker(Path("data"), date(2026, 10, 14), Path("vault"), 300)
+            values = []
+            worker.succeeded.connect(lambda *result: values.append(result))
+            worker.failed.connect(values.append)
+            with patch("pc_activity_logger.gui.generate_daily_report", return_value=ReportResult(Path("report.md"), 2, 1, 600),
+                       side_effect=OSError("missing history") if failure else None):
+                worker.run()
+            self.assertEqual(values, ["missing history"] if failure else [("report.md", 2, 1, 600.0)])
+
+    def test_low_load_settings_reduce_capture_frequency_and_disable_full_monitor_saves(self) -> None:
+        window = Mock()
+        MainWindow.apply_low_load_settings(window)
+        window.interval_sec.setValue.assert_called_once_with(300)
+        window.jpeg_quality.setValue.assert_called_once_with(65)
+        window.save_monitor_screenshot.setChecked.assert_called_once_with(False)
+        window.skip_same_screen.setChecked.assert_called_once_with(True)
+        window.save_settings.assert_not_called()
+
+    def test_latest_record_survives_subsequent_idle_status(self) -> None:
+        window = Mock()
+        result = CycleResult("recorded", {"timestamp": "2026-10-14T14:25:30+09:00",
+            "app_name": "Code.exe", "activity": "履歴を実装"})
+        MainWindow._cycle_completed(window, result)
+        self.assertIn("14:25:30", window.last_record.setText.call_args.args[0])
+        self.assertIn("Code.exe", window.last_record.setText.call_args.args[0])
+        window.last_record.setText.reset_mock()
+        MainWindow._cycle_completed(window, CycleResult("idle"))
+        window.last_record.setText.assert_not_called()
+        self.assertIn("Idle", window.last_decision.setText.call_args.args[0])
+
+    def test_countdown_uses_monotonic_time_without_capturing(self) -> None:
+        window = Mock()
+        with patch("pc_activity_logger.gui.time.monotonic", return_value=100.1):
+            for deadline, expected in ((103.0, "3秒"), (99.0, "0秒"), (None, "—")):
+                window._next_capture_deadline = deadline
+                MainWindow._update_countdown(window)
+                self.assertIn(expected, window.next_capture.setText.call_args.args[0])
+        window.start_logging.assert_not_called()
+
+    def test_worker_exposes_skip_reason_and_next_capture_without_polling_during_wait(self) -> None:
+        worker = ActivityWorker(SimpleNamespace(openwebui=Mock(), capture=SimpleNamespace(interval_sec=180)))
+        worker._stop_event.wait = Mock(return_value=True)
+        results, deadlines = [], []
+        worker.cycle_completed.connect(results.append)
+        worker.next_capture_at.connect(deadlines.append)
+        with patch("pc_activity_logger.gui.OpenWebUIClient"), patch(
+            "pc_activity_logger.gui.run_once", return_value=CycleResult("unchanged")
+        ):
+            worker.run()
+        self.assertEqual([result.reason for result in results], ["unchanged"])
+        self.assertEqual(deadlines[0], 0.0)
+        self.assertGreater(deadlines[1], 0)
+        worker._stop_event.wait.assert_called_once()
+
+    def test_log_folder_opens_with_desktop_service(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            window = Mock()
+            with patch("pc_activity_logger.gui.default_app_directory", return_value=Path(temporary)), patch(
+                "pc_activity_logger.gui.QDesktopServices.openUrl", return_value=True
+            ) as open_folder:
+                MainWindow.open_log_folder(window)
+            self.assertEqual(Path(open_folder.call_args.args[0].toLocalFile()), (Path(temporary) / "logs").resolve())
+
     def test_automatic_start_uses_independent_delay_but_manual_start_is_immediate(self) -> None:
         for automatic, expected in ((True, 300), (False, 0)):
             with self.subTest(automatic=automatic):
@@ -23,12 +100,12 @@ class ActivityWorkerTests(unittest.TestCase):
             with self.subTest(failure=failure):
                 worker = ExportWorker(Path("activity.jsonl"), Path("vault"))
                 signals = []
-                worker.succeeded.connect(lambda path, count: signals.append((path, count)))
+                worker.succeeded.connect(lambda path, count, skipped: signals.append((path, count, skipped)))
                 worker.failed.connect(lambda message: signals.append(message))
-                with patch("pc_activity_logger.gui.export_markdown", return_value=2,
+                with patch("pc_activity_logger.gui.export_markdown", return_value=ExportResult(2, 1),
                            side_effect=ValueError("line 2: invalid history") if failure else None):
                     worker.run()
-                self.assertEqual(signals, ["line 2: invalid history"] if failure else [("vault", 2)])
+                self.assertEqual(signals, ["line 2: invalid history"] if failure else [("vault", 2, 1)])
 
     def test_gui_history_export_does_not_require_saved_settings_or_api_key(self) -> None:
         for all_history in (False, True):

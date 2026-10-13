@@ -2,20 +2,23 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import sys
 import threading
 import time
+from datetime import date
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QThread, Signal
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtCore import QDate, QThread, QTimer, QUrl, Qt, Signal
+from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
+    QDateEdit,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -46,11 +49,13 @@ from .gui_settings import (
     save_values,
     stored_api_key,
 )
-from .main import CaptureState, run_once
+from .main import CaptureState, CycleResult, refresh_daily_report, run_once
+from .history import record_timestamp
 from .markdown import export_markdown
 from .openwebui import OpenWebUIClient
 from .prompts import DEFAULT_ANALYSIS_SYSTEM_PROMPT
-from .windows import OpenWindow, get_open_windows
+from .report import generate_daily_report
+from .windows import OpenWindow, enable_dpi_awareness, get_open_windows
 from . import scheduler
 
 
@@ -59,6 +64,8 @@ LOGGER = logging.getLogger("pc_activity_logger")
 
 class ActivityWorker(QThread):
     status_changed = Signal(str)
+    cycle_completed = Signal(object)
+    next_capture_at = Signal(float)
 
     def __init__(self, config: Any, initial_delay_sec: int = 0) -> None:
         super().__init__()
@@ -86,6 +93,7 @@ class ActivityWorker(QThread):
                 self.initial_delay_sec,
             )
             self.status_changed.emit(f"初回実行待機中（{self.initial_delay_sec}秒）")
+            self.next_capture_at.emit(time.monotonic() + self.initial_delay_sec)
             if self._stop_event.wait(self.initial_delay_sec):
                 LOGGER.info("GUI worker stopped during initial delay")
                 self.status_changed.emit("停止中")
@@ -111,17 +119,25 @@ class ActivityWorker(QThread):
                     state = CaptureState()
                 assert client is not None
                 started = time.monotonic()
+                self.next_capture_at.emit(0.0)
+                self.status_changed.emit("撮影・解析中")
                 try:
-                    run_once(cycle_config, client, state)
+                    result = run_once(cycle_config, client, state)
+                    if isinstance(result, CycleResult):
+                        self.cycle_completed.emit(result)
                 except Exception:
                     LOGGER.exception("Capture cycle failed")
+                    self.cycle_completed.emit(CycleResult("error"))
                 remaining = max(
                     0.0,
                     cycle_config.capture.interval_sec - (time.monotonic() - started),
                 )
+                self.status_changed.emit("次回撮影待機中")
+                self.next_capture_at.emit(time.monotonic() + remaining)
                 if self._stop_event.wait(remaining):
                     break
         finally:
+            refresh_daily_report(active_config or self.current_config(), state, force=True)
             if client is not None:
                 client.close()
         LOGGER.info("GUI worker stopped")
@@ -149,7 +165,7 @@ class ConnectionWorker(QThread):
 
 
 class ExportWorker(QThread):
-    succeeded = Signal(str, int)
+    succeeded = Signal(str, int, int)
     failed = Signal(str)
 
     def __init__(self, source: Path, destination: Path) -> None:
@@ -159,8 +175,24 @@ class ExportWorker(QThread):
 
     def run(self) -> None:
         try:
-            count = export_markdown(self.source, self.destination)
-            self.succeeded.emit(str(self.destination), count)
+            result = export_markdown(self.source, self.destination)
+            self.succeeded.emit(str(self.destination), result.exported, result.skipped)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class ReportWorker(QThread):
+    succeeded = Signal(str, int, int, float)
+    failed = Signal(str)
+
+    def __init__(self, source: Path, day: date, vault: Path, interval_sec: int) -> None:
+        super().__init__()
+        self.source, self.day, self.vault, self.interval_sec = source, day, vault, interval_sec
+
+    def run(self) -> None:
+        try:
+            result = generate_daily_report(self.source, self.day, self.vault, self.interval_sec)
+            self.succeeded.emit(str(result.path), result.records, result.skipped, result.total_seconds)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -243,10 +275,14 @@ class MainWindow(QMainWindow):
         self.worker: ActivityWorker | None = None
         self.connection_worker: ConnectionWorker | None = None
         self.export_worker: ExportWorker | None = None
+        self.report_worker: ReportWorker | None = None
+        self._next_capture_deadline: float | None = None
         self.really_quit = False
         self.setWindowTitle("PC Activity Logger")
         self.resize(760, 680)
         self._build_ui()
+        self.countdown_timer = QTimer(self)
+        self.countdown_timer.timeout.connect(self._update_countdown)
         self._build_tray()
         self._configure_logging()
         self._load_settings()
@@ -272,11 +308,19 @@ class MainWindow(QMainWindow):
         self.model.setEditable(True)
         self.timeout_sec = self._spin(1, 600)
         self.max_tokens = self._spin(64, 32768)
+        self.max_retries = self._spin(0, 5)
+        self.retry_backoff_sec = self._spin(0, 30)
+        self.cleanup_temporary_files = QCheckBox("本ツールの古い一時画像を整理")
+        self.temporary_file_max_age_hours = self._spin(1, 8760)
         openwebui_form.addRow("Base URL", self.base_url)
         openwebui_form.addRow("API Key", self.api_key)
         openwebui_form.addRow("モデル", self.model)
         openwebui_form.addRow("タイムアウト（秒）", self.timeout_sec)
         openwebui_form.addRow("最大トークン", self.max_tokens)
+        openwebui_form.addRow("通信の再試行回数", self.max_retries)
+        openwebui_form.addRow("再試行の初期待機（秒）", self.retry_backoff_sec)
+        openwebui_form.addRow("残留画像の整理", self.cleanup_temporary_files)
+        openwebui_form.addRow("一時画像の保持（時間）", self.temporary_file_max_age_hours)
 
         capture_box = QGroupBox("撮影・スキップ")
         capture_form = QFormLayout(capture_box)
@@ -307,6 +351,9 @@ class MainWindow(QMainWindow):
         capture_form.addRow("除外アプリ名（部分一致）", self.excluded_app_names)
         capture_form.addRow("除外タイトル（部分一致）", self.excluded_window_titles)
         capture_form.addRow("", self.pick_window_button)
+        low_load_button = QPushButton("低負荷設定を適用")
+        low_load_button.clicked.connect(self.apply_low_load_settings)
+        capture_form.addRow("", low_load_button)
 
         storage_box = QGroupBox("保存・連携")
         storage_grid = QGridLayout(storage_box)
@@ -315,6 +362,9 @@ class MainWindow(QMainWindow):
         browse.clicked.connect(self.browse_data_dir)
         self.notes_enabled = QCheckBox("OpenWebUI Noteへ追記")
         self.markdown_enabled = QCheckBox("記録ごとのObsidian Markdownも保存")
+        self.retention_days = self._spin(0, 3650)
+        self.save_monitor_screenshot = QCheckBox("モニター全体の画像も保存（負荷が増えます）")
+        self.reports_enabled = QCheckBox("日報サマリーを自動生成（最大1時間ごと）")
         self.obsidian_vault = QLineEdit()
         browse_vault = QPushButton("参照")
         browse_vault.clicked.connect(self.browse_obsidian_vault)
@@ -330,7 +380,11 @@ class MainWindow(QMainWindow):
         storage_grid.addWidget(self.notes_enabled, 3, 1, 1, 2)
         storage_grid.addWidget(QLabel("Noteタイトル接頭辞"), 4, 0)
         storage_grid.addWidget(self.notes_title_prefix, 4, 1, 1, 2)
-        storage_grid.addWidget(self.autostart, 5, 1, 1, 2)
+        storage_grid.addWidget(QLabel("画像の保持日数（0で無期限）"), 5, 0)
+        storage_grid.addWidget(self.retention_days, 5, 1, 1, 2)
+        storage_grid.addWidget(self.save_monitor_screenshot, 6, 1, 1, 2)
+        storage_grid.addWidget(self.reports_enabled, 7, 1, 1, 2)
+        storage_grid.addWidget(self.autostart, 8, 1, 1, 2)
 
         buttons = QHBoxLayout()
         self.test_button = QPushButton("接続テスト")
@@ -359,7 +413,18 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(openwebui_box)
         settings_layout.addWidget(capture_box)
         settings_layout.addWidget(storage_box)
-        settings_layout.addLayout(status_row)
+        status_box = QGroupBox("記録状況")
+        status_layout = QVBoxLayout(status_box)
+        status_layout.addLayout(status_row)
+        self.last_decision = QLabel("直近の判定: まだ実行していません")
+        self.last_record = QLabel("直近の記録: なし")
+        self.last_record.setTextFormat(Qt.TextFormat.PlainText)
+        self.last_record.setWordWrap(True)
+        self.next_capture = QLabel("次回撮影: —")
+        status_layout.addWidget(self.last_decision)
+        status_layout.addWidget(self.last_record)
+        status_layout.addWidget(self.next_capture)
+        settings_layout.insertWidget(0, status_box)
         settings_layout.addLayout(buttons)
         settings_layout.addStretch()
 
@@ -396,16 +461,33 @@ class MainWindow(QMainWindow):
         self.export_status = QLabel("")
         self.export_status.setWordWrap(True)
         history_layout.addWidget(self.export_status)
+        report_row = QHBoxLayout()
+        self.report_date = QDateEdit(QDate.currentDate())
+        self.report_date.setCalendarPopup(True)
+        self.report_date.setDisplayFormat("yyyy-MM-dd")
+        self.report_button = QPushButton("日報サマリーを生成")
+        self.report_button.clicked.connect(self.generate_report)
+        report_row.addWidget(QLabel("日報の日付"))
+        report_row.addWidget(self.report_date)
+        report_row.addWidget(self.report_button)
+        history_layout.addLayout(report_row)
+        self.report_status = QLabel("日報の時間は定期撮影からの推定値です。")
+        self.report_status.setWordWrap(True)
+        history_layout.addWidget(self.report_status)
         history_layout.addStretch()
 
         log_page = QWidget()
         log_layout = QVBoxLayout(log_page)
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
+        self.log_view.setMaximumBlockCount(2000)
         log_layout.addWidget(self.log_view)
         clear_button = QPushButton("表示をクリア")
         clear_button.clicked.connect(self.log_view.clear)
         log_layout.addWidget(clear_button)
+        open_logs_button = QPushButton("ログフォルダーを開く")
+        open_logs_button.clicked.connect(self.open_log_folder)
+        log_layout.addWidget(open_logs_button)
 
         settings_scroll = QScrollArea()
         settings_scroll.setWidgetResizable(True)
@@ -476,6 +558,10 @@ class MainWindow(QMainWindow):
             self.model.setCurrentText(str(values["model"]))
             self.timeout_sec.setValue(int(values["timeout_sec"]))
             self.max_tokens.setValue(int(values["max_tokens"]))
+            self.max_retries.setValue(int(values["max_retries"]))
+            self.retry_backoff_sec.setValue(int(values["retry_backoff_sec"]))
+            self.cleanup_temporary_files.setChecked(bool(values["cleanup_temporary_files"]))
+            self.temporary_file_max_age_hours.setValue(int(values["temporary_file_max_age_hours"]))
             self.system_prompt.setPlainText(str(values["system_prompt"]))
             self.interval_sec.setValue(int(values["interval_sec"]))
             self.startup_delay_min.setValue(int(values["startup_delay_min"]))
@@ -499,6 +585,9 @@ class MainWindow(QMainWindow):
             )
             self.data_dir.setText(str(values["data_dir"]))
             self.markdown_enabled.setChecked(bool(values["markdown_enabled"]))
+            self.retention_days.setValue(max(0, int(values["retention_days"])))
+            self.save_monitor_screenshot.setChecked(bool(values["save_monitor_screenshot"]))
+            self.reports_enabled.setChecked(bool(values["reports_enabled"]))
             self.obsidian_vault.setText(str(values["obsidian_vault"]))
             self.notes_enabled.setChecked(bool(values["notes_enabled"]))
             self.notes_title_prefix.setText(str(values["notes_title_prefix"]))
@@ -511,6 +600,10 @@ class MainWindow(QMainWindow):
             "model": self.model.currentText(),
             "timeout_sec": self.timeout_sec.value(),
             "max_tokens": self.max_tokens.value(),
+            "max_retries": self.max_retries.value(),
+            "retry_backoff_sec": self.retry_backoff_sec.value(),
+            "cleanup_temporary_files": self.cleanup_temporary_files.isChecked(),
+            "temporary_file_max_age_hours": self.temporary_file_max_age_hours.value(),
             "system_prompt": self.system_prompt.toPlainText(),
             "interval_sec": self.interval_sec.value(),
             "startup_delay_min": self.startup_delay_min.value(),
@@ -526,6 +619,9 @@ class MainWindow(QMainWindow):
             ),
             "data_dir": self.data_dir.text(),
             "markdown_enabled": self.markdown_enabled.isChecked(),
+            "retention_days": self.retention_days.value(),
+            "save_monitor_screenshot": self.save_monitor_screenshot.isChecked(),
+            "reports_enabled": self.reports_enabled.isChecked(),
             "obsidian_vault": self.obsidian_vault.text(),
             "notes_enabled": self.notes_enabled.isChecked(),
             "notes_title_prefix": self.notes_title_prefix.text(),
@@ -601,7 +697,11 @@ class MainWindow(QMainWindow):
         initial_delay = config.capture.startup_delay_min * 60 if delay_first_capture else 0
         self.worker = ActivityWorker(config, initial_delay_sec=initial_delay)
         self.worker.status_changed.connect(self.status.setText)
+        self.worker.cycle_completed.connect(self._cycle_completed)
+        self.worker.next_capture_at.connect(self._set_next_capture)
         self.worker.finished.connect(self._worker_finished)
+        if self.isVisible():
+            self.countdown_timer.start(1000)
         self.worker.start()
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
@@ -613,10 +713,45 @@ class MainWindow(QMainWindow):
             self.worker.stop()
 
     def _worker_finished(self) -> None:
+        self.countdown_timer.stop()
+        self._set_next_capture(0.0)
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.status.setText("停止中")
         self.tray.showMessage("PC Activity Logger", "記録を停止しました")
+
+    def _cycle_completed(self, result: CycleResult) -> None:
+        captions = {
+            "recorded": "記録を保存しました", "idle": "Idle中のためスキップ",
+            "unavailable": "ロック・切断中のためスキップ", "excluded": "除外条件に一致したためスキップ",
+            "unsafe": "前面領域が小さい、または不明のためスキップ", "unchanged": "同一画面のためスキップ",
+            "error": "処理に失敗しました。ログを確認してください",
+        }
+        self.last_decision.setText("直近の判定: " + captions.get(result.reason, result.reason))
+        if result.record:
+            record = result.record
+            at = record_timestamp(record).strftime("%H:%M:%S")
+            self.last_record.setText(f"直近の記録: {at} — {record.get('app_name', '')} — {record['activity']}")
+
+    def _set_next_capture(self, deadline: float) -> None:
+        self._next_capture_deadline = deadline if deadline > 0 else None
+        self._update_countdown()
+
+    def _update_countdown(self) -> None:
+        if self._next_capture_deadline is None:
+            self.next_capture.setText("次回撮影: —")
+        else:
+            seconds = max(0, math.ceil(self._next_capture_deadline - time.monotonic()))
+            self.next_capture.setText(f"次回撮影まで: {seconds}秒")
+
+    def open_log_folder(self) -> None:
+        try:
+            directory = default_app_directory() / "logs"
+            directory.mkdir(parents=True, exist_ok=True)
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory.resolve()))):
+                raise OSError("ログフォルダーを開けませんでした。")
+        except OSError as exc:
+            QMessageBox.critical(self, "ログフォルダーエラー", str(exc))
 
     def browse_data_dir(self) -> None:
         selected = QFileDialog.getExistingDirectory(
@@ -624,6 +759,14 @@ class MainWindow(QMainWindow):
         )
         if selected:
             self.data_dir.setText(selected)
+
+    def apply_low_load_settings(self) -> None:
+        self.interval_sec.setValue(300)
+        self.jpeg_quality.setValue(65)
+        self.skip_same_screen.setChecked(True)
+        self.same_screen_force_after_sec.setValue(1800)
+        self.save_monitor_screenshot.setChecked(False)
+        self.status.setText("低負荷設定に変更しました。設定を保存してください")
 
     def browse_obsidian_vault(self) -> None:
         selected = QFileDialog.getExistingDirectory(
@@ -662,12 +805,34 @@ class MainWindow(QMainWindow):
         self.export_button.setEnabled(True)
         self.export_all_button.setEnabled(True)
 
-    def _export_succeeded(self, destination: str, count: int) -> None:
-        self.export_status.setText(f"{count}件の履歴を書き出しました。\n{destination}")
+    def _export_succeeded(self, destination: str, count: int, skipped: int) -> None:
+        self.export_status.setText(f"{count}件を書き出しました。破損レコードのスキップ: {skipped}件\n{destination}")
 
     def _export_failed(self, message: str) -> None:
         self.export_status.setText("書き出しに失敗しました。")
         QMessageBox.critical(self, "履歴の書き出しエラー", message)
+
+    def generate_report(self) -> None:
+        if self.report_worker and self.report_worker.isRunning():
+            return
+        vault = QFileDialog.getExistingDirectory(self, "日報を保存するVaultを選択", self.obsidian_vault.text())
+        if not vault:
+            return
+        day = date.fromisoformat(self.report_date.date().toString("yyyy-MM-dd"))
+        self.report_worker = ReportWorker(Path(self.data_dir.text()), day, Path(vault), self.interval_sec.value())
+        self.report_worker.succeeded.connect(self._report_succeeded)
+        self.report_worker.failed.connect(self._report_failed)
+        self.report_worker.finished.connect(lambda: self.report_button.setEnabled(True))
+        self.report_button.setEnabled(False)
+        self.report_status.setText("日報を生成しています…")
+        self.report_worker.start()
+
+    def _report_succeeded(self, path: str, records: int, skipped: int, seconds: float) -> None:
+        self.report_status.setText(f"{records}件を集計しました。推定{seconds / 60:.1f}分、破損行のスキップ{skipped}件\n{path}")
+
+    def _report_failed(self, message: str) -> None:
+        self.report_status.setText("日報の生成に失敗しました。")
+        QMessageBox.critical(self, "日報生成エラー", message)
 
     def restore_default_system_prompt(self) -> None:
         self.system_prompt.setPlainText(DEFAULT_ANALYSIS_SYSTEM_PROMPT)
@@ -703,6 +868,9 @@ class MainWindow(QMainWindow):
 
     def show_window(self) -> None:
         self.show()
+        if self.worker and self.worker.isRunning():
+            self._update_countdown()
+            self.countdown_timer.start(1000)
         self.raise_()
         self.activateWindow()
 
@@ -711,6 +879,7 @@ class MainWindow(QMainWindow):
             event.accept()
         else:
             event.ignore()
+            self.countdown_timer.stop()
             self.hide()
             self.tray.showMessage(
                 "PC Activity Logger", "バックグラウンドで動作しています"
@@ -721,7 +890,7 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait()
-        for worker in (self.connection_worker, self.export_worker):
+        for worker in (self.connection_worker, self.export_worker, self.report_worker):
             if worker and worker.isRunning():
                 worker.wait()
         QApplication.instance().quit()
@@ -737,6 +906,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    enable_dpi_awareness()
     app = QApplication(sys.argv[:1])
     if args.smoke_test:
         stored_api_key()

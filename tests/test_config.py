@@ -26,6 +26,7 @@ storage:
             self.assertEqual(config.openwebui.base_url, "http://localhost:8080/api")
             self.assertEqual(config.storage.data_dir, Path(temporary).resolve() / "records")
             self.assertTrue(config.storage.markdown_enabled)
+            self.assertEqual(config.storage.retention_days, 14)
             self.assertEqual(config.capture.idle_threshold_sec, 300)
             self.assertEqual(config.capture.startup_delay_min, 3)
             self.assertTrue(config.capture.skip_same_screen)
@@ -118,7 +119,8 @@ capture:
 
     def test_rejects_invalid_integer_settings_with_field_name(self) -> None:
         fields = {
-            "openwebui": ("timeout_sec", "max_tokens"),
+            "storage": ("retention_days",),
+            "openwebui": ("timeout_sec", "max_tokens", "max_retries", "retry_backoff_sec", "temporary_file_max_age_hours"),
             "capture": (
                 "interval_sec", "jpeg_quality", "idle_threshold_sec",
                 "startup_delay_min",

@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from PyInstaller.utils.hooks import collect_submodules
+from pathlib import Path
 
 
 hiddenimports = collect_submodules("keyring.backends")
@@ -31,6 +32,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="PCActivityLogger",
+    manifest=str(Path(SPECPATH) / "windows-dpi.manifest"),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

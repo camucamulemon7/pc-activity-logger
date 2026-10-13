@@ -1,4 +1,5 @@
 import unittest
+import json
 import tempfile
 import signal
 from contextlib import ExitStack
@@ -18,6 +19,51 @@ from pc_activity_logger.windows import ActiveWindow
 
 
 class MainTests(unittest.TestCase):
+    def setUp(self) -> None:
+        cleanup = patch("pc_activity_logger.main.cleanup_screenshots", return_value=0)
+        cleanup.start()
+        self.addCleanup(cleanup.stop)
+
+    def test_foreground_only_mode_captures_and_saves_one_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = Config(OpenWebUIConfig("http://localhost/api", "synthetic", "model"),
+                            CaptureConfig(idle_threshold_sec=0), StorageConfig(root), NotesConfig())
+            window = ActiveWindow(0, "synthetic", "test.exe", {
+                "left": -800, "top": 0, "width": 800, "height": 600,
+            }, {"left": -700, "top": 50, "width": 500, "height": 400})
+            client = Mock()
+            client.upload_temporary_image.return_value = "synthetic-file"
+            client.analyze.return_value = Analysis("確認", "p", "other", "詳細", .8)
+            with patch("pc_activity_logger.main.is_interactive_session_available", return_value=True), patch(
+                "pc_activity_logger.main.get_active_window", return_value=window
+            ), patch("pc_activity_logger.main.capture_monitor", return_value=b"synthetic-active") as capture, patch(
+                "pc_activity_logger.main.crop_to_active_window"
+            ) as crop, patch("pc_activity_logger.main.difference_hash", return_value=123):
+                result = run_once(config, client)
+            capture.assert_called_once_with({"left": -700, "top": 50, "width": 500, "height": 400}, 80)
+            crop.assert_not_called()
+            self.assertEqual(len(list(root.rglob("*.jpg"))), 1)
+            self.assertNotIn("monitor_screenshot", result.record)
+            self.assertEqual(result.record["interval_sec"], 180)
+
+    def test_small_window_is_skipped_before_capture_or_upload(self) -> None:
+        config = Config(OpenWebUIConfig("http://localhost/api", "synthetic", "model"),
+                        CaptureConfig(idle_threshold_sec=0), StorageConfig(), NotesConfig())
+        window = ActiveWindow(0, "sensitive title", "test.exe", {
+            "left": 0, "top": 0, "width": 800, "height": 600,
+        }, {"left": 10, "top": 10, "width": 20, "height": 20})
+        client = Mock()
+        with patch("pc_activity_logger.main.is_interactive_session_available", return_value=True), patch(
+            "pc_activity_logger.main.get_active_window", return_value=window
+        ), patch("pc_activity_logger.main.capture_monitor") as capture, self.assertLogs(
+            "pc_activity_logger", level="INFO"
+        ) as logs:
+            run_once(config, client)
+        capture.assert_not_called()
+        client.upload_temporary_image.assert_not_called()
+        self.assertNotIn("sensitive title", " ".join(logs.output))
+
     def test_cli_startup_delay_can_be_stopped_before_capture_and_closes_client(self) -> None:
         config = Config(OpenWebUIConfig("http://localhost/api", "synthetic", "model"),
                         CaptureConfig(interval_sec=60, startup_delay_min=5), StorageConfig(), NotesConfig())
@@ -56,12 +102,12 @@ class MainTests(unittest.TestCase):
                 config = Config(
                     OpenWebUIConfig("http://localhost/api", "test", "model"),
                     CaptureConfig(idle_threshold_sec=0, skip_same_screen=False),
-                    StorageConfig(data_dir, markdown_enabled=failure != "markdown_disabled"),
+                    StorageConfig(data_dir, markdown_enabled=failure != "markdown_disabled", save_monitor_screenshot=True),
                     NotesConfig(enabled=True),
                 )
                 window = ActiveWindow(0, "synthetic", "test.exe", {
                     "left": 0, "top": 0, "width": 100, "height": 100,
-                })
+                }, {"left": 0, "top": 0, "width": 100, "height": 100})
                 client = Mock()
                 client.upload_temporary_image.return_value = "file-test"
                 client.analyze.return_value = Analysis("確認", "p", "other", "詳細", .8)
@@ -97,10 +143,12 @@ class MainTests(unittest.TestCase):
                             run_once(config, client, state)
                 if failure == "upload":
                     client.delete_file.assert_not_called()
+                    client.release_temporary_image.assert_not_called()
                 else:
                     client.delete_file.assert_called_once_with("file-test")
+                    client.release_temporary_image.assert_called_once_with("file-test")
                 if failure in ("upload", "analysis", "storage"):
-                    self.assertEqual(state, CaptureState(999, 0.0))
+                    self.assertEqual((state.last_analyzed_hash, state.last_analyzed_at), (999, 0.0))
                     self.assertEqual(list(data_dir.rglob("activity.jsonl")), [])
                     client.append_daily_note.assert_not_called()
                 else:
