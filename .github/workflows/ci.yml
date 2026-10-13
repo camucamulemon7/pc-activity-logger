@@ -53,6 +53,7 @@ jobs:
       - name: Diagnose Qt teardown failure
         if: failure() && runner.os == 'Linux' && matrix.python == '3.10'
         run: |
+          sudo apt-get install --no-install-recommends -y gdb
           python - <<'PY'
           import ast
           import shutil
@@ -73,4 +74,18 @@ jobs:
                   print(result.stderr[-1800:], flush=True)
           if shutil.which('gdb'):
               subprocess.run(['gdb', '-q', '-batch', '-ex', 'run', '-ex', 'bt', '--args', sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-q'])
+          probe = '''import sys, unittest
+          suite = unittest.defaultTestLoader.discover('tests', pattern='test_gui.py')
+          def cases(item):
+              for test in item:
+                  if isinstance(test, unittest.TestSuite):
+                      yield from cases(test)
+                  else:
+                      yield test
+          result = unittest.TextTestRunner(verbosity=0).run(unittest.TestSuite(test for test in cases(suite) if not test.id().endswith('.' + sys.argv[1])))
+          sys.exit(not result.wasSuccessful())
+          '''
+          for name in names:
+              result = subprocess.run([sys.executable, '-c', probe, name], capture_output=True, text=True)
+              print('without', name, 'exit=', result.returncode, flush=True)
           PY
