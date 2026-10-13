@@ -69,6 +69,25 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual([value.args[0].rsplit("/", 1)[-1] for value in client.session.delete.call_args_list], ["old", "second"])
         self.assertEqual(client.session.get.call_args.kwargs["params"], {"page": 2, "content": "false"})
 
+    def test_failed_immediate_deletion_can_be_recovered_by_later_cleanup(self) -> None:
+        client = OpenWebUIClient(OpenWebUIConfig("http://localhost/api", "synthetic", "model", max_retries=0))
+        captured = datetime(2026, 10, 12, 12, tzinfo=timezone.utc)
+        now = datetime(2026, 10, 14, 12, tzinfo=timezone.utc)
+        client.session.post = Mock(return_value=response(data={"id": "unfinished"}))
+        client.upload_temporary_image(b"synthetic", captured)
+        filename = client.session.post.call_args.kwargs["files"]["file"][0]
+        client.session.delete = Mock(side_effect=[requests.Timeout("synthetic"), response()])
+        with self.assertRaises(requests.Timeout):
+            client.delete_file("unfinished")
+        item = {"id": "unfinished", "user_id": "me", "filename": filename, "created_at": captured.timestamp()}
+        client.session.get = Mock(side_effect=[response(data={"id": "me"}),
+            response(data={"items": [item], "total": 1}), response(data={"id": "me"}),
+            response(data={"items": [item], "total": 1})])
+        self.assertEqual(client.cleanup_temporary_files(now), 0)
+        client.release_temporary_image("unfinished")
+        self.assertEqual(client.cleanup_temporary_files(now), 1)
+        self.assertEqual(client.session.delete.call_count, 2)
+
     def test_cleanup_refuses_unverified_owner_and_delete_404_is_success(self) -> None:
         client = OpenWebUIClient(OpenWebUIConfig("http://localhost/api", "synthetic", "model"))
         client.session.get = Mock(return_value=response(data={}))

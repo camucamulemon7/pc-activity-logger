@@ -69,7 +69,7 @@ def perform_maintenance(config: Config, state: CaptureState, client: OpenWebUICl
         count = cleanup_screenshots(config.storage.data_dir, config.storage.retention_days)
         if count:
             LOGGER.info("Removed %d expired local screenshots", count)
-    except OSError:
+    except (OSError, ValueError, OverflowError):
         LOGGER.exception("Local screenshot cleanup failed; recording will continue")
     if config.openwebui.cleanup_temporary_files:
         try:
@@ -199,6 +199,8 @@ def run_once(
             LOGGER.info("Deleted temporary OpenWebUI File: %s", file_id)
         except Exception:
             LOGGER.exception("Failed to delete temporary OpenWebUI File: %s", file_id)
+        finally:
+            client.release_temporary_image(file_id)
     if config.storage.markdown_enabled:
         try:
             vault = config.storage.obsidian_vault or config.storage.data_dir / "obsidian"

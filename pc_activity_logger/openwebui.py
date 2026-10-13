@@ -292,6 +292,10 @@ class OpenWebUIClient:
             _raise_for_status(response)
         self._temporary_file_ids.discard(file_id)
 
+    def release_temporary_image(self, file_id: str) -> None:
+        """Allow maintenance to recover a finished upload whose deletion failed."""
+        self._temporary_file_ids.discard(file_id)
+
     def cleanup_temporary_files(self, now: datetime | None = None) -> int:
         """Delete only old, owned logger images, collecting pages before deleting."""
         response = self._request("get", f"{self.webui_root}/api/v1/auths/")
