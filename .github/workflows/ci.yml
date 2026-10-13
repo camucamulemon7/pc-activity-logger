@@ -54,6 +54,7 @@ jobs:
         if: failure() && runner.os == 'Linux' && matrix.python == '3.10'
         run: |
           sudo apt-get install --no-install-recommends -y gdb
+          PYTHONMALLOC=debug python -m unittest discover -s tests -p test_gui.py -q || true
           python - <<'PY'
           import ast
           import shutil
@@ -89,3 +90,5 @@ jobs:
               result = subprocess.run([sys.executable, '-c', probe, name], capture_output=True, text=True)
               print('without', name, 'exit=', result.returncode, flush=True)
           PY
+          python -m pip install 'PySide6>=6.8,<6.12'
+          python -m unittest discover -s tests -q
