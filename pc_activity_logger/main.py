@@ -32,7 +32,7 @@ class CaptureState:
     maintenance_date: date | None = None
 
 
-def perform_maintenance(config: Config, state: CaptureState) -> None:
+def perform_maintenance(config: Config, state: CaptureState, client: OpenWebUIClient) -> None:
     today = datetime.now().astimezone().date()
     if state.maintenance_date == today:
         return
@@ -42,6 +42,13 @@ def perform_maintenance(config: Config, state: CaptureState) -> None:
             LOGGER.info("Removed %d expired local screenshots", count)
     except OSError:
         LOGGER.exception("Local screenshot cleanup failed; recording will continue")
+    if config.openwebui.cleanup_temporary_files:
+        try:
+            count = client.cleanup_temporary_files()
+            if isinstance(count, int) and count:
+                LOGGER.info("Removed %d expired OpenWebUI logger images", count)
+        except Exception:
+            LOGGER.exception("OpenWebUI temporary-file cleanup failed; recording will continue")
     state.maintenance_date = today
 
 
@@ -62,7 +69,7 @@ def run_once(
     state: CaptureState | None = None,
 ) -> None:
     if state is not None:
-        perform_maintenance(config, state)
+        perform_maintenance(config, state, client)
     if (
         config.capture.skip_unavailable_session
         and not is_interactive_session_available()

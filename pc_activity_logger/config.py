@@ -17,6 +17,10 @@ class OpenWebUIConfig:
     timeout_sec: int = 120
     max_tokens: int = 1024
     system_prompt: str = DEFAULT_ANALYSIS_SYSTEM_PROMPT
+    max_retries: int = 2
+    retry_backoff_sec: int = 1
+    cleanup_temporary_files: bool = True
+    temporary_file_max_age_hours: int = 24
 
 
 @dataclass(frozen=True)
@@ -120,6 +124,18 @@ def load_config(path: Path, api_key_override: str | None = None) -> Config:
     timeout = _integer(ow, "timeout_sec", 120, "openwebui")
     max_tokens = _integer(ow, "max_tokens", 1024, "openwebui")
     system_prompt = ow.get("system_prompt", DEFAULT_ANALYSIS_SYSTEM_PROMPT)
+    max_retries = _integer(ow, "max_retries", 2, "openwebui")
+    retry_backoff = _integer(ow, "retry_backoff_sec", 1, "openwebui")
+    temporary_file_age = _integer(ow, "temporary_file_max_age_hours", 24, "openwebui")
+    cleanup_files = ow.get("cleanup_temporary_files", True)
+    if not 0 <= max_retries <= 5:
+        raise ValueError("openwebui.max_retries must be between 0 and 5")
+    if not 0 <= retry_backoff <= 30:
+        raise ValueError("openwebui.retry_backoff_sec must be between 0 and 30")
+    if temporary_file_age < 1:
+        raise ValueError("openwebui.temporary_file_max_age_hours must be at least 1")
+    if not isinstance(cleanup_files, bool):
+        raise ValueError("openwebui.cleanup_temporary_files must be true or false")
     if interval < 1:
         raise ValueError("capture.interval_sec must be at least 1")
     if startup_delay_min < 0:
@@ -178,6 +194,10 @@ def load_config(path: Path, api_key_override: str | None = None) -> Config:
             timeout_sec=timeout,
             max_tokens=max_tokens,
             system_prompt=system_prompt.strip(),
+            max_retries=max_retries,
+            retry_backoff_sec=retry_backoff,
+            cleanup_temporary_files=cleanup_files,
+            temporary_file_max_age_hours=temporary_file_age,
         ),
         capture=CaptureConfig(
             interval_sec=interval,

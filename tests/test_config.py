@@ -120,7 +120,7 @@ capture:
     def test_rejects_invalid_integer_settings_with_field_name(self) -> None:
         fields = {
             "storage": ("retention_days",),
-            "openwebui": ("timeout_sec", "max_tokens"),
+            "openwebui": ("timeout_sec", "max_tokens", "max_retries", "retry_backoff_sec", "temporary_file_max_age_hours"),
             "capture": (
                 "interval_sec", "jpeg_quality", "idle_threshold_sec",
                 "startup_delay_min",

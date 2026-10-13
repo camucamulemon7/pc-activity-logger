@@ -4,6 +4,10 @@ openwebui:
   model: "gemma-4-31B-it"
   timeout_sec: 120
   max_tokens: 1024
+  max_retries: 2
+  retry_backoff_sec: 1
+  cleanup_temporary_files: true
+  temporary_file_max_age_hours: 24
 
 capture:
   interval_sec: 180

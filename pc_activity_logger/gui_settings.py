@@ -34,6 +34,10 @@ def default_values() -> dict[str, Any]:
         "timeout_sec": 120,
         "max_tokens": 1024,
         "system_prompt": DEFAULT_ANALYSIS_SYSTEM_PROMPT,
+        "max_retries": 2,
+        "retry_backoff_sec": 1,
+        "cleanup_temporary_files": True,
+        "temporary_file_max_age_hours": 24,
         "interval_sec": 180,
         "startup_delay_min": 3,
         "jpeg_quality": 80,
@@ -66,7 +70,8 @@ def read_values(path: Path) -> dict[str, Any]:
     notes = raw.get("notes", {})
     if not all(isinstance(section, dict) for section in (ow, capture, storage, notes)):
         raise ValueError("GUI config sections must be YAML mappings")
-    for key in ("base_url", "model", "timeout_sec", "max_tokens", "system_prompt"):
+    for key in ("base_url", "model", "timeout_sec", "max_tokens", "system_prompt",
+                "max_retries", "retry_backoff_sec", "cleanup_temporary_files", "temporary_file_max_age_hours"):
         if key in ow:
             values[key] = ow[key]
     for key in (
@@ -116,6 +121,10 @@ def save_values(path: Path, values: dict[str, Any], api_key: str) -> Config:
             "timeout_sec": int(values["timeout_sec"]),
             "max_tokens": int(values["max_tokens"]),
             "system_prompt": str(values["system_prompt"]).strip(),
+            "max_retries": int(values.get("max_retries", 2)),
+            "retry_backoff_sec": int(values.get("retry_backoff_sec", 1)),
+            "cleanup_temporary_files": bool(values.get("cleanup_temporary_files", True)),
+            "temporary_file_max_age_hours": int(values.get("temporary_file_max_age_hours", 24)),
         },
         "capture": {
             "interval_sec": int(values["interval_sec"]),

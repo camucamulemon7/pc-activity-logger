@@ -156,6 +156,10 @@ openwebui:
   model: "gemma-4-31B-it"
   timeout_sec: 120
   max_tokens: 1024
+  max_retries: 2
+  retry_backoff_sec: 1
+  cleanup_temporary_files: true
+  temporary_file_max_age_hours: 24
 
 capture:
   interval_sec: 180
@@ -193,6 +197,12 @@ notes:
 | `timeout_sec` | API応答を待つ最大秒数 |
 | `max_tokens` | Visionモデルが返す最大トークン数 |
 | `system_prompt` | 画像解析時に`system`ロールで送信する指示。省略時は内蔵の既定値 |
+| `max_retries` | 一時的な通信障害の追加再試行回数（0～5、既定2） |
+| `retry_backoff_sec` | 再試行の初期待機秒数（0～30、既定1）。指数バックオフ、1回最大30秒 |
+| `cleanup_temporary_files` | 開始時・日付変更後に古いOpenWebUI一時画像を整理するか |
+| `temporary_file_max_age_hours` | 残留画像の整理対象になるまでの時間。既定24時間 |
+
+Connection/TimeoutおよびHTTP 429・502・503・504は、参照・削除・解析・既存Note更新で再試行します。認証エラーなどは即時エラーになります。アップロードと新規Note作成は、応答だけ失われた際の重複を防ぐため通信エラーで再試行しません。残留画像の整理では[OpenWebUIのFiles API](https://github.com/open-webui/open-webui/blob/main/backend/open_webui/routers/files.py)から一覧を取得し、認証ユーザー本人が所有する、本ツールの命名形式に一致した古い画像だけを削除します。解析中の画像、他ユーザーの画像、年齢不明の画像は対象外です。整理失敗でも記録は続けます。
 
 Files、Chat Completions、Notesを含むすべてのOpenWebUI APIリクエストには、クライアント識別用として`User-Agent: pc-activity-logger`と`X-OpenWebUI-Client-User-Agent: pc-activity-logger`が固定で付与されます。OpenWebUIが標準`User-Agent`からモデル向けヘッダーを生成する場合にも、Langfuse上では`pc-activity-logger`として記録されます。これらの値は設定ファイルから変更できません。
 
@@ -448,7 +458,6 @@ GitHub ActionsのCIはpushとpull requestで起動し、Linux（Ubuntu）とWind
 
 ## 現在未実装の機能
 
-- OpenWebUIに残った古い一時ファイルの起動時クリーンアップ
 - 日報・週報の自動生成
 - プロジェクトへの確定的な紐付け
 - OpenWebUI Noteの更新失敗時の再送

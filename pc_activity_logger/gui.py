@@ -272,11 +272,19 @@ class MainWindow(QMainWindow):
         self.model.setEditable(True)
         self.timeout_sec = self._spin(1, 600)
         self.max_tokens = self._spin(64, 32768)
+        self.max_retries = self._spin(0, 5)
+        self.retry_backoff_sec = self._spin(0, 30)
+        self.cleanup_temporary_files = QCheckBox("本ツールの古い一時画像を整理")
+        self.temporary_file_max_age_hours = self._spin(1, 8760)
         openwebui_form.addRow("Base URL", self.base_url)
         openwebui_form.addRow("API Key", self.api_key)
         openwebui_form.addRow("モデル", self.model)
         openwebui_form.addRow("タイムアウト（秒）", self.timeout_sec)
         openwebui_form.addRow("最大トークン", self.max_tokens)
+        openwebui_form.addRow("通信の再試行回数", self.max_retries)
+        openwebui_form.addRow("再試行の初期待機（秒）", self.retry_backoff_sec)
+        openwebui_form.addRow("残留画像の整理", self.cleanup_temporary_files)
+        openwebui_form.addRow("一時画像の保持（時間）", self.temporary_file_max_age_hours)
 
         capture_box = QGroupBox("撮影・スキップ")
         capture_form = QFormLayout(capture_box)
@@ -479,6 +487,10 @@ class MainWindow(QMainWindow):
             self.model.setCurrentText(str(values["model"]))
             self.timeout_sec.setValue(int(values["timeout_sec"]))
             self.max_tokens.setValue(int(values["max_tokens"]))
+            self.max_retries.setValue(int(values["max_retries"]))
+            self.retry_backoff_sec.setValue(int(values["retry_backoff_sec"]))
+            self.cleanup_temporary_files.setChecked(bool(values["cleanup_temporary_files"]))
+            self.temporary_file_max_age_hours.setValue(int(values["temporary_file_max_age_hours"]))
             self.system_prompt.setPlainText(str(values["system_prompt"]))
             self.interval_sec.setValue(int(values["interval_sec"]))
             self.startup_delay_min.setValue(int(values["startup_delay_min"]))
@@ -515,6 +527,10 @@ class MainWindow(QMainWindow):
             "model": self.model.currentText(),
             "timeout_sec": self.timeout_sec.value(),
             "max_tokens": self.max_tokens.value(),
+            "max_retries": self.max_retries.value(),
+            "retry_backoff_sec": self.retry_backoff_sec.value(),
+            "cleanup_temporary_files": self.cleanup_temporary_files.isChecked(),
+            "temporary_file_max_age_hours": self.temporary_file_max_age_hours.value(),
             "system_prompt": self.system_prompt.toPlainText(),
             "interval_sec": self.interval_sec.value(),
             "startup_delay_min": self.startup_delay_min.value(),
