@@ -55,6 +55,7 @@ jobs:
         run: |
           python - <<'PY'
           import ast
+          import shutil
           import subprocess
           import sys
           from pathlib import Path
@@ -65,4 +66,11 @@ jobs:
               print(name, 'exit=', result.returncode, flush=True)
               if result.returncode:
                   print(result.stderr[-1800:], flush=True)
+          for path in sorted(Path('tests').glob('test_*.py')):
+              result = subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-p', path.name, '-q'], capture_output=True, text=True)
+              print(path.name, 'exit=', result.returncode, flush=True)
+              if result.returncode:
+                  print(result.stderr[-1800:], flush=True)
+          if shutil.which('gdb'):
+              subprocess.run(['gdb', '-q', '-batch', '-ex', 'run', '-ex', 'bt', '--args', sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-q'])
           PY
