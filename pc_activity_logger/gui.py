@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import sys
 import threading
 import time
@@ -9,8 +10,8 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QThread, Signal
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtCore import QThread, QTimer, QUrl, Qt, Signal
+from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -46,7 +47,8 @@ from .gui_settings import (
     save_values,
     stored_api_key,
 )
-from .main import CaptureState, run_once
+from .main import CaptureState, CycleResult, run_once
+from .history import record_timestamp
 from .markdown import export_markdown
 from .openwebui import OpenWebUIClient
 from .prompts import DEFAULT_ANALYSIS_SYSTEM_PROMPT
@@ -59,6 +61,8 @@ LOGGER = logging.getLogger("pc_activity_logger")
 
 class ActivityWorker(QThread):
     status_changed = Signal(str)
+    cycle_completed = Signal(object)
+    next_capture_at = Signal(float)
 
     def __init__(self, config: Any, initial_delay_sec: int = 0) -> None:
         super().__init__()
@@ -86,6 +90,7 @@ class ActivityWorker(QThread):
                 self.initial_delay_sec,
             )
             self.status_changed.emit(f"初回実行待機中（{self.initial_delay_sec}秒）")
+            self.next_capture_at.emit(time.monotonic() + self.initial_delay_sec)
             if self._stop_event.wait(self.initial_delay_sec):
                 LOGGER.info("GUI worker stopped during initial delay")
                 self.status_changed.emit("停止中")
@@ -111,14 +116,21 @@ class ActivityWorker(QThread):
                     state = CaptureState()
                 assert client is not None
                 started = time.monotonic()
+                self.next_capture_at.emit(0.0)
+                self.status_changed.emit("撮影・解析中")
                 try:
-                    run_once(cycle_config, client, state)
+                    result = run_once(cycle_config, client, state)
+                    if isinstance(result, CycleResult):
+                        self.cycle_completed.emit(result)
                 except Exception:
                     LOGGER.exception("Capture cycle failed")
+                    self.cycle_completed.emit(CycleResult("error"))
                 remaining = max(
                     0.0,
                     cycle_config.capture.interval_sec - (time.monotonic() - started),
                 )
+                self.status_changed.emit("次回撮影待機中")
+                self.next_capture_at.emit(time.monotonic() + remaining)
                 if self._stop_event.wait(remaining):
                     break
         finally:
@@ -243,10 +255,13 @@ class MainWindow(QMainWindow):
         self.worker: ActivityWorker | None = None
         self.connection_worker: ConnectionWorker | None = None
         self.export_worker: ExportWorker | None = None
+        self._next_capture_deadline: float | None = None
         self.really_quit = False
         self.setWindowTitle("PC Activity Logger")
         self.resize(760, 680)
         self._build_ui()
+        self.countdown_timer = QTimer(self)
+        self.countdown_timer.timeout.connect(self._update_countdown)
         self._build_tray()
         self._configure_logging()
         self._load_settings()
@@ -370,7 +385,18 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(openwebui_box)
         settings_layout.addWidget(capture_box)
         settings_layout.addWidget(storage_box)
-        settings_layout.addLayout(status_row)
+        status_box = QGroupBox("記録状況")
+        status_layout = QVBoxLayout(status_box)
+        status_layout.addLayout(status_row)
+        self.last_decision = QLabel("直近の判定: まだ実行していません")
+        self.last_record = QLabel("直近の記録: なし")
+        self.last_record.setTextFormat(Qt.TextFormat.PlainText)
+        self.last_record.setWordWrap(True)
+        self.next_capture = QLabel("次回撮影: —")
+        status_layout.addWidget(self.last_decision)
+        status_layout.addWidget(self.last_record)
+        status_layout.addWidget(self.next_capture)
+        settings_layout.insertWidget(0, status_box)
         settings_layout.addLayout(buttons)
         settings_layout.addStretch()
 
@@ -417,6 +443,9 @@ class MainWindow(QMainWindow):
         clear_button = QPushButton("表示をクリア")
         clear_button.clicked.connect(self.log_view.clear)
         log_layout.addWidget(clear_button)
+        open_logs_button = QPushButton("ログフォルダーを開く")
+        open_logs_button.clicked.connect(self.open_log_folder)
+        log_layout.addWidget(open_logs_button)
 
         settings_scroll = QScrollArea()
         settings_scroll.setWidgetResizable(True)
@@ -622,7 +651,10 @@ class MainWindow(QMainWindow):
         initial_delay = config.capture.startup_delay_min * 60 if delay_first_capture else 0
         self.worker = ActivityWorker(config, initial_delay_sec=initial_delay)
         self.worker.status_changed.connect(self.status.setText)
+        self.worker.cycle_completed.connect(self._cycle_completed)
+        self.worker.next_capture_at.connect(self._set_next_capture)
         self.worker.finished.connect(self._worker_finished)
+        self.countdown_timer.start(1000)
         self.worker.start()
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
@@ -634,10 +666,45 @@ class MainWindow(QMainWindow):
             self.worker.stop()
 
     def _worker_finished(self) -> None:
+        self.countdown_timer.stop()
+        self._set_next_capture(0.0)
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.status.setText("停止中")
         self.tray.showMessage("PC Activity Logger", "記録を停止しました")
+
+    def _cycle_completed(self, result: CycleResult) -> None:
+        captions = {
+            "recorded": "記録を保存しました", "idle": "Idle中のためスキップ",
+            "unavailable": "ロック・切断中のためスキップ", "excluded": "除外条件に一致したためスキップ",
+            "unsafe": "前面領域が小さい、または不明のためスキップ", "unchanged": "同一画面のためスキップ",
+            "error": "処理に失敗しました。ログを確認してください",
+        }
+        self.last_decision.setText("直近の判定: " + captions.get(result.reason, result.reason))
+        if result.record:
+            record = result.record
+            at = record_timestamp(record).strftime("%H:%M:%S")
+            self.last_record.setText(f"直近の記録: {at} — {record.get('app_name', '')} — {record['activity']}")
+
+    def _set_next_capture(self, deadline: float) -> None:
+        self._next_capture_deadline = deadline if deadline > 0 else None
+        self._update_countdown()
+
+    def _update_countdown(self) -> None:
+        if self._next_capture_deadline is None:
+            self.next_capture.setText("次回撮影: —")
+        else:
+            seconds = max(0, math.ceil(self._next_capture_deadline - time.monotonic()))
+            self.next_capture.setText(f"次回撮影まで: {seconds}秒")
+
+    def open_log_folder(self) -> None:
+        try:
+            directory = default_app_directory() / "logs"
+            directory.mkdir(parents=True, exist_ok=True)
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory.resolve()))):
+                raise OSError("ログフォルダーを開けませんでした。")
+        except OSError as exc:
+            QMessageBox.critical(self, "ログフォルダーエラー", str(exc))
 
     def browse_data_dir(self) -> None:
         selected = QFileDialog.getExistingDirectory(

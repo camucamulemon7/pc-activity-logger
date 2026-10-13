@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 from .capture import UnsafeCaptureError, active_window_crop_box, capture_monitor, crop_to_active_window, difference_hash, hash_distance
 from .config import Config, load_config
@@ -30,6 +31,12 @@ class CaptureState:
     last_analyzed_hash: int | None = None
     last_analyzed_at: float | None = None
     maintenance_date: date | None = None
+
+
+@dataclass(frozen=True)
+class CycleResult:
+    reason: str
+    record: dict[str, Any] | None = None
 
 
 def perform_maintenance(config: Config, state: CaptureState, client: OpenWebUIClient) -> None:
@@ -67,7 +74,7 @@ def run_once(
     config: Config,
     client: OpenWebUIClient,
     state: CaptureState | None = None,
-) -> None:
+) -> CycleResult:
     if state is not None:
         perform_maintenance(config, state, client)
     if (
@@ -75,7 +82,7 @@ def run_once(
         and not is_interactive_session_available()
     ):
         LOGGER.info("Skipping capture; Windows session is locked or disconnected")
-        return
+        return CycleResult("unavailable")
 
     if config.capture.idle_threshold_sec > 0:
         idle_seconds = get_idle_seconds()
@@ -85,18 +92,18 @@ def run_once(
                 idle_seconds,
                 config.capture.idle_threshold_sec,
             )
-            return
+            return CycleResult("idle")
 
     window = get_active_window()
     if is_excluded_window(config, window.app_name, window.title):
         LOGGER.info("Skipping capture; foreground window matches an exclusion rule")
-        return
+        return CycleResult("excluded")
 
     try:
         active_window_crop_box(window.monitor, window.window_rect)
     except UnsafeCaptureError:
         LOGGER.info("Skipping capture; foreground region is too small or unavailable")
-        return
+        return CycleResult("unsafe")
 
     captured_at = datetime.now().astimezone()
     LOGGER.info("Capturing %s (%s)", window.app_name, window.title)
@@ -126,7 +133,7 @@ def run_once(
                 distance,
                 elapsed,
             )
-            return
+            return CycleResult("unchanged")
 
     monitor_screenshot_path = save_screenshot(
         config.storage.data_dir, captured_at, image, "monitor"
@@ -189,6 +196,7 @@ def run_once(
         analysis.activity,
         analysis.confidence,
     )
+    return CycleResult("recorded", record)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

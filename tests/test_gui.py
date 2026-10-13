@@ -1,13 +1,60 @@
 import unittest
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from pc_activity_logger.markdown import ExportResult
+from pc_activity_logger.main import CycleResult
 from pc_activity_logger.gui import ActivityWorker, ConnectionWorker, ExportWorker, MainWindow
 
 
 class ActivityWorkerTests(unittest.TestCase):
+    def test_latest_record_survives_subsequent_idle_status(self) -> None:
+        window = Mock()
+        result = CycleResult("recorded", {"timestamp": "2026-10-14T14:25:30+09:00",
+            "app_name": "Code.exe", "activity": "履歴を実装"})
+        MainWindow._cycle_completed(window, result)
+        self.assertIn("14:25:30", window.last_record.setText.call_args.args[0])
+        self.assertIn("Code.exe", window.last_record.setText.call_args.args[0])
+        window.last_record.setText.reset_mock()
+        MainWindow._cycle_completed(window, CycleResult("idle"))
+        window.last_record.setText.assert_not_called()
+        self.assertIn("Idle", window.last_decision.setText.call_args.args[0])
+
+    def test_countdown_uses_monotonic_time_without_capturing(self) -> None:
+        window = Mock()
+        with patch("pc_activity_logger.gui.time.monotonic", return_value=100.1):
+            for deadline, expected in ((103.0, "3秒"), (99.0, "0秒"), (None, "—")):
+                window._next_capture_deadline = deadline
+                MainWindow._update_countdown(window)
+                self.assertIn(expected, window.next_capture.setText.call_args.args[0])
+        window.start_logging.assert_not_called()
+
+    def test_worker_exposes_skip_reason_and_next_capture_without_polling_during_wait(self) -> None:
+        worker = ActivityWorker(SimpleNamespace(openwebui=Mock(), capture=SimpleNamespace(interval_sec=180)))
+        worker._stop_event.wait = Mock(return_value=True)
+        results, deadlines = [], []
+        worker.cycle_completed.connect(results.append)
+        worker.next_capture_at.connect(deadlines.append)
+        with patch("pc_activity_logger.gui.OpenWebUIClient"), patch(
+            "pc_activity_logger.gui.run_once", return_value=CycleResult("unchanged")
+        ):
+            worker.run()
+        self.assertEqual([result.reason for result in results], ["unchanged"])
+        self.assertEqual(deadlines[0], 0.0)
+        self.assertGreater(deadlines[1], 0)
+        worker._stop_event.wait.assert_called_once()
+
+    def test_log_folder_opens_with_desktop_service(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            window = Mock()
+            with patch("pc_activity_logger.gui.default_app_directory", return_value=Path(temporary)), patch(
+                "pc_activity_logger.gui.QDesktopServices.openUrl", return_value=True
+            ) as open_folder:
+                MainWindow.open_log_folder(window)
+            self.assertEqual(Path(open_folder.call_args.args[0].toLocalFile()), (Path(temporary) / "logs").resolve())
+
     def test_automatic_start_uses_independent_delay_but_manual_start_is_immediate(self) -> None:
         for automatic, expected in ((True, 300), (False, 0)):
             with self.subTest(automatic=automatic):
