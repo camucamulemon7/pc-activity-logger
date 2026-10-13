@@ -76,12 +76,15 @@ class GuiSettingsTests(unittest.TestCase):
             path = Path(temporary) / "config.yaml"
             values = default_values()
             values["markdown_enabled"] = False
+            values["retention_days"] = 7
             values["startup_delay_min"] = 5
             values["obsidian_vault"] = str(Path(temporary) / "vault")
             with patch("pc_activity_logger.gui_settings.keyring.set_password"):
                 config = save_values(path, values, "synthetic")
             self.assertFalse(config.storage.markdown_enabled)
             self.assertFalse(read_values(path)["markdown_enabled"])
+            self.assertEqual(config.storage.retention_days, 7)
+            self.assertEqual(read_values(path)["retention_days"], 7)
             self.assertEqual(read_values(path)["startup_delay_min"], 5)
             self.assertEqual(config.storage.obsidian_vault, (Path(temporary) / "vault").resolve())
 

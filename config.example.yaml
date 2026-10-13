@@ -20,6 +20,7 @@ capture:
 storage:
   data_dir: "data"
   markdown_enabled: true
+  retention_days: 14
   # Existing Obsidian vault root; omit to use data_dir/obsidian.
   # obsidian_vault: "C:/Users/USER/Documents/MyVault"
 

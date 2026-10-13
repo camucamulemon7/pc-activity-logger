@@ -6,14 +6,14 @@ import signal
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from .capture import UnsafeCaptureError, active_window_crop_box, capture_monitor, crop_to_active_window, difference_hash, hash_distance
 from .config import Config, load_config
 from .markdown import write_activity_markdown
 from .openwebui import OpenWebUIClient
-from .storage import append_activity, save_screenshot
+from .storage import append_activity, cleanup_screenshots, save_screenshot
 from .windows import (
     get_active_window,
     get_idle_seconds,
@@ -29,6 +29,20 @@ LOGGER = logging.getLogger("pc_activity_logger")
 class CaptureState:
     last_analyzed_hash: int | None = None
     last_analyzed_at: float | None = None
+    maintenance_date: date | None = None
+
+
+def perform_maintenance(config: Config, state: CaptureState) -> None:
+    today = datetime.now().astimezone().date()
+    if state.maintenance_date == today:
+        return
+    try:
+        count = cleanup_screenshots(config.storage.data_dir, config.storage.retention_days)
+        if count:
+            LOGGER.info("Removed %d expired local screenshots", count)
+    except OSError:
+        LOGGER.exception("Local screenshot cleanup failed; recording will continue")
+    state.maintenance_date = today
 
 
 def _contains_any(value: str, patterns: tuple[str, ...]) -> bool:
@@ -47,6 +61,8 @@ def run_once(
     client: OpenWebUIClient,
     state: CaptureState | None = None,
 ) -> None:
+    if state is not None:
+        perform_maintenance(config, state)
     if (
         config.capture.skip_unavailable_session
         and not is_interactive_session_available()

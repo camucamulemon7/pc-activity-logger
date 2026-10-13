@@ -315,6 +315,7 @@ class MainWindow(QMainWindow):
         browse.clicked.connect(self.browse_data_dir)
         self.notes_enabled = QCheckBox("OpenWebUI Noteへ追記")
         self.markdown_enabled = QCheckBox("記録ごとのObsidian Markdownも保存")
+        self.retention_days = self._spin(0, 3650)
         self.obsidian_vault = QLineEdit()
         browse_vault = QPushButton("参照")
         browse_vault.clicked.connect(self.browse_obsidian_vault)
@@ -330,7 +331,9 @@ class MainWindow(QMainWindow):
         storage_grid.addWidget(self.notes_enabled, 3, 1, 1, 2)
         storage_grid.addWidget(QLabel("Noteタイトル接頭辞"), 4, 0)
         storage_grid.addWidget(self.notes_title_prefix, 4, 1, 1, 2)
-        storage_grid.addWidget(self.autostart, 5, 1, 1, 2)
+        storage_grid.addWidget(QLabel("画像の保持日数（0で無期限）"), 5, 0)
+        storage_grid.addWidget(self.retention_days, 5, 1, 1, 2)
+        storage_grid.addWidget(self.autostart, 6, 1, 1, 2)
 
         buttons = QHBoxLayout()
         self.test_button = QPushButton("接続テスト")
@@ -499,6 +502,7 @@ class MainWindow(QMainWindow):
             )
             self.data_dir.setText(str(values["data_dir"]))
             self.markdown_enabled.setChecked(bool(values["markdown_enabled"]))
+            self.retention_days.setValue(max(0, int(values["retention_days"])))
             self.obsidian_vault.setText(str(values["obsidian_vault"]))
             self.notes_enabled.setChecked(bool(values["notes_enabled"]))
             self.notes_title_prefix.setText(str(values["notes_title_prefix"]))
@@ -526,6 +530,7 @@ class MainWindow(QMainWindow):
             ),
             "data_dir": self.data_dir.text(),
             "markdown_enabled": self.markdown_enabled.isChecked(),
+            "retention_days": self.retention_days.value(),
             "obsidian_vault": self.obsidian_vault.text(),
             "notes_enabled": self.notes_enabled.isChecked(),
             "notes_title_prefix": self.notes_title_prefix.text(),

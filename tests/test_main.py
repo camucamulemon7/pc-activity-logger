@@ -117,7 +117,7 @@ class MainTests(unittest.TestCase):
                 else:
                     client.delete_file.assert_called_once_with("file-test")
                 if failure in ("upload", "analysis", "storage"):
-                    self.assertEqual(state, CaptureState(999, 0.0))
+                    self.assertEqual((state.last_analyzed_hash, state.last_analyzed_at), (999, 0.0))
                     self.assertEqual(list(data_dir.rglob("activity.jsonl")), [])
                     client.append_daily_note.assert_not_called()
                 else:

@@ -174,6 +174,7 @@ capture:
 storage:
   data_dir: "data"
   markdown_enabled: true
+  retention_days: 14
   # 既存のObsidian Vaultへ保存する場合は、そのルートフォルダーを指定
   # obsidian_vault: "C:/Users/USER/Documents/MyVault"
 
@@ -238,6 +239,9 @@ GUI版では「開いているWindowから選択」を押すと、現在表示�
 |---|---|
 | `storage.markdown_enabled` | 記録ごとのMarkdown自動保存。既定`true`。JSONLの保存とは独立 |
 | `storage.obsidian_vault` | Obsidian Vaultのルートフォルダー。省略時は`data_dir/obsidian`。相対パスは設定ファイルの場所が基準 |
+| `storage.retention_days` | 当日を含む画像の保持日数。既定`14`。`0`または負数で無期限保持（GUIでは`0`） |
+
+画像の整理は記録開始時と日付が変わった後の周期で行います。日付フォルダーの` screenshots/`内にある、本ツールの命名形式の`active`・`monitor` JPEGだけを削除し、JSONL・Markdown・その他のファイルは残します。シンボリックリンクや別の場所へ向いたディレクトリは対象にしません。
 
 GUIでは「記録ごとのObsidian Markdownも保存」を有効にし、「Obsidian Vault保存先」を選んで設定を保存します。既存のVaultを選ぶ場合はVault内のサブフォルダーではなく、Vaultのルートを指定してください。生成ノートはその下の`PC Activity Logger/`に保存されます。
 
@@ -444,7 +448,6 @@ GitHub ActionsのCIはpushとpull requestで起動し、Linux（Ubuntu）とWind
 
 ## 現在未実装の機能
 
-- Windows側スクリーンショットの保存期限による自動削除
 - OpenWebUIに残った古い一時ファイルの起動時クリーンアップ
 - 日報・週報の自動生成
 - プロジェクトへの確定的な紐付け
