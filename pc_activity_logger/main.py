@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .capture import capture_monitor, crop_to_active_window, difference_hash, hash_distance
+from .capture import UnsafeCaptureError, active_window_crop_box, capture_monitor, crop_to_active_window, difference_hash, hash_distance
 from .config import Config, load_config
 from .markdown import write_activity_markdown
 from .openwebui import OpenWebUIClient
@@ -18,6 +18,7 @@ from .windows import (
     get_active_window,
     get_idle_seconds,
     is_interactive_session_available,
+    enable_dpi_awareness,
 )
 
 
@@ -66,6 +67,12 @@ def run_once(
     window = get_active_window()
     if is_excluded_window(config, window.app_name, window.title):
         LOGGER.info("Skipping capture; foreground window matches an exclusion rule")
+        return
+
+    try:
+        active_window_crop_box(window.monitor, window.window_rect)
+    except UnsafeCaptureError:
+        LOGGER.info("Skipping capture; foreground region is too small or unavailable")
         return
 
     captured_at = datetime.now().astimezone()
@@ -176,6 +183,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    enable_dpi_awareness()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",

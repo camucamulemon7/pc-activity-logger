@@ -50,7 +50,7 @@ from .main import CaptureState, run_once
 from .markdown import export_markdown
 from .openwebui import OpenWebUIClient
 from .prompts import DEFAULT_ANALYSIS_SYSTEM_PROMPT
-from .windows import OpenWindow, get_open_windows
+from .windows import OpenWindow, enable_dpi_awareness, get_open_windows
 from . import scheduler
 
 
@@ -737,6 +737,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    enable_dpi_awareness()
     app = QApplication(sys.argv[:1])
     if args.smoke_test:
         stored_api_key()

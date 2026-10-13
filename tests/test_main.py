@@ -18,6 +18,23 @@ from pc_activity_logger.windows import ActiveWindow
 
 
 class MainTests(unittest.TestCase):
+    def test_small_window_is_skipped_before_capture_or_upload(self) -> None:
+        config = Config(OpenWebUIConfig("http://localhost/api", "synthetic", "model"),
+                        CaptureConfig(idle_threshold_sec=0), StorageConfig(), NotesConfig())
+        window = ActiveWindow(0, "sensitive title", "test.exe", {
+            "left": 0, "top": 0, "width": 800, "height": 600,
+        }, {"left": 10, "top": 10, "width": 20, "height": 20})
+        client = Mock()
+        with patch("pc_activity_logger.main.is_interactive_session_available", return_value=True), patch(
+            "pc_activity_logger.main.get_active_window", return_value=window
+        ), patch("pc_activity_logger.main.capture_monitor") as capture, self.assertLogs(
+            "pc_activity_logger", level="INFO"
+        ) as logs:
+            run_once(config, client)
+        capture.assert_not_called()
+        client.upload_temporary_image.assert_not_called()
+        self.assertNotIn("sensitive title", " ".join(logs.output))
+
     def test_cli_startup_delay_can_be_stopped_before_capture_and_closes_client(self) -> None:
         config = Config(OpenWebUIConfig("http://localhost/api", "synthetic", "model"),
                         CaptureConfig(interval_sec=60, startup_delay_min=5), StorageConfig(), NotesConfig())
@@ -61,7 +78,7 @@ class MainTests(unittest.TestCase):
                 )
                 window = ActiveWindow(0, "synthetic", "test.exe", {
                     "left": 0, "top": 0, "width": 100, "height": 100,
-                })
+                }, {"left": 0, "top": 0, "width": 100, "height": 100})
                 client = Mock()
                 client.upload_temporary_image.return_value = "file-test"
                 client.analyze.return_value = Analysis("確認", "p", "other", "詳細", .8)

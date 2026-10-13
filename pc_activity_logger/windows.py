@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import ctypes
+import sys
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -13,6 +15,7 @@ WTS_CURRENT_SERVER_HANDLE = 0
 WTS_CURRENT_SESSION = 0xFFFFFFFF
 WTS_CONNECT_STATE = 8
 WTS_ACTIVE = 0
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
 HMONITOR = wintypes.HANDLE
 WNDENUMPROC = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(
     wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
@@ -58,6 +61,49 @@ class OpenWindow:
     hwnd: int
     title: str
     app_name: str
+
+
+def enable_dpi_awareness() -> bool:
+    """Set Per-Monitor v2 before creating a GUI; manifests/Qt may already do so."""
+    if sys.platform != "win32":
+        return False
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        setter = user32.SetProcessDpiAwarenessContext
+        setter.argtypes = [ctypes.c_void_p]
+        setter.restype = wintypes.BOOL
+        if setter(ctypes.c_void_p(-4)):
+            return True
+        if ctypes.get_last_error() == 5:
+            return True  # Already configured by a manifest or Qt.
+    except (AttributeError, OSError):
+        pass
+    try:
+        shcore = ctypes.WinDLL("shcore", use_last_error=True)
+        setter = shcore.SetProcessDpiAwareness
+        setter.argtypes = [ctypes.c_int]
+        setter.restype = ctypes.c_long
+        result = setter(2)
+        return result == 0 or (result & 0xFFFFFFFF) == 0x80070005
+    except (AttributeError, OSError):
+        return False
+
+
+def _visible_window_rect(hwnd: int, user32: Any) -> RECT:
+    rect = RECT()
+    try:
+        dwm = ctypes.WinDLL("dwmapi", use_last_error=True)
+        getter = dwm.DwmGetWindowAttribute
+        getter.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+        getter.restype = ctypes.c_long
+        result = getter(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(rect), ctypes.sizeof(rect))
+        if result == 0 and rect.right > rect.left and rect.bottom > rect.top:
+            return rect
+    except (AttributeError, OSError):
+        pass
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return rect
 
 
 def _windows_apis() -> tuple[ctypes.WinDLL, ctypes.WinDLL]:
@@ -211,9 +257,7 @@ def get_active_window() -> ActiveWindow:
         raise ctypes.WinError()
 
     rect = info.rcMonitor
-    window_rect = RECT()
-    if not user32.GetWindowRect(hwnd, ctypes.byref(window_rect)):
-        raise ctypes.WinError(ctypes.get_last_error())
+    window_rect = _visible_window_rect(hwnd, user32)
     return ActiveWindow(
         hwnd=hwnd,
         title=title_buffer.value,

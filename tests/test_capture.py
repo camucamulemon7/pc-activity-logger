@@ -4,6 +4,7 @@ from io import BytesIO
 from PIL import Image
 
 from pc_activity_logger.capture import (
+    UnsafeCaptureError,
     crop_to_active_window,
     difference_hash,
     hash_distance,
@@ -23,17 +24,14 @@ class CaptureTests(unittest.TestCase):
         with Image.open(BytesIO(cropped_bytes)) as cropped:
             self.assertEqual(cropped.size, (500, 400))
 
-    def test_uses_full_monitor_when_window_is_too_small(self) -> None:
+    def test_refuses_small_missing_or_off_monitor_window(self) -> None:
         source = BytesIO()
         Image.new("RGB", (800, 600), "white").save(source, format="JPEG")
         original = source.getvalue()
-        result = crop_to_active_window(
-            original,
-            {"left": 0, "top": 0, "width": 800, "height": 600},
-            {"left": 10, "top": 10, "width": 20, "height": 20},
-            80,
-        )
-        self.assertEqual(result, original)
+        for rect in (None, {"left": 10, "top": 10, "width": 20, "height": 20},
+                     {"left": 900, "top": 10, "width": 300, "height": 300}):
+            with self.subTest(rect=rect), self.assertRaises(UnsafeCaptureError):
+                crop_to_active_window(original, {"left": 0, "top": 0, "width": 800, "height": 600}, rect, 80)
 
     def test_difference_hash_is_stable_for_same_image(self) -> None:
         source = BytesIO()
