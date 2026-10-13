@@ -1,3 +1,4 @@
+import gc
 import unittest
 import tempfile
 from pathlib import Path
@@ -18,6 +19,11 @@ class ActivityWorkerTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         # QThread signals need a Qt application, also when run() is called inline.
         cls.application = QCoreApplication.instance() or QCoreApplication([])
+
+    def tearDown(self) -> None:
+        # Collect test callbacks while the Qt application is still alive.
+        gc.collect()
+        self.application.processEvents()
 
     def test_report_worker_emits_summary_and_reports_failure(self) -> None:
         for failure in (False, True):

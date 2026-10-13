@@ -73,7 +73,7 @@ jobs:
               if result.returncode:
                   print(result.stderr[-1800:], flush=True)
           if shutil.which('gdb'):
-              subprocess.run(['gdb', '-q', '-batch', '-ex', 'run', '-ex', 'bt', '--args', sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-q'])
+              subprocess.run(['gdb', '-q', '-batch', '-ex', 'run', '-ex', 'bt', '-ex', 'frame 17', '-ex', 'x/s ((PyASCIIObject*)co->co_name)+1', '-ex', 'x/s ((PyASCIIObject*)co->co_filename)+1', '--args', sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-q'])
           probe = '''import sys, unittest
           suite = unittest.defaultTestLoader.discover('tests', pattern='test_gui.py')
           def cases(item):
