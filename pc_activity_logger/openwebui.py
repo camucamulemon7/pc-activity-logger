@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -41,8 +42,12 @@ ACTIVITY_JSON_SCHEMA: dict[str, Any] = {
         "category": {"type": "string", "enum": sorted(ALLOWED_CATEGORIES)},
         "detail": {"type": "string", "minLength": 1},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "keywords": {
+            "type": "array", "maxItems": 8,
+            "items": {"type": "string", "minLength": 1, "maxLength": 64},
+        },
     },
-    "required": ["activity", "project", "category", "detail", "confidence"],
+    "required": ["activity", "project", "category", "detail", "confidence", "keywords"],
     "additionalProperties": False,
 }
 
@@ -67,6 +72,7 @@ class Analysis:
     category: str
     detail: str
     confidence: float
+    keywords: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -75,6 +81,7 @@ class Analysis:
             "category": self.category,
             "detail": self.detail,
             "confidence": self.confidence,
+            "keywords": list(self.keywords),
         }
 
 
@@ -120,12 +127,27 @@ def _validate(value: dict[str, Any]) -> Analysis:
         raise ValueError("Model response confidence must be numeric") from exc
     if not math.isfinite(confidence):
         raise ValueError("Model response confidence must be finite")
+    keyword_values = value.get("keywords", [])
+    if not isinstance(keyword_values, list) or len(keyword_values) > 8:
+        raise ValueError("Model response keywords must be a list of at most 8 strings")
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for keyword in keyword_values:
+        if not isinstance(keyword, str) or not keyword.strip() or len(keyword.strip()) > 64:
+            raise ValueError("Model response keywords must contain non-empty strings of at most 64 characters")
+        keyword = unicodedata.normalize("NFKC", " ".join(keyword.split()))
+        if len(keyword) > 64:
+            raise ValueError("Model response keywords must be at most 64 characters after normalization")
+        if keyword.casefold() not in seen:
+            seen.add(keyword.casefold())
+            keywords.append(keyword)
     return Analysis(
         activity=value["activity"].strip(),
         project=value["project"].strip(),
         category=category,
         detail=value["detail"].strip(),
         confidence=max(0.0, min(1.0, confidence)),
+        keywords=tuple(keywords),
     )
 
 
@@ -157,7 +179,8 @@ def _message_text(message: dict[str, Any]) -> str:
             value = json.loads(reasoning)
         except (ValueError, TypeError):
             value = None
-        if isinstance(value, dict) and value.keys() == REQUIRED_KEYS:
+        if (isinstance(value, dict) and REQUIRED_KEYS <= value.keys()
+                and value.keys() <= REQUIRED_KEYS | {"keywords"}):
             _validate(value)
             return reasoning
     keys = sorted(str(key) for key in message.keys())
@@ -336,7 +359,10 @@ class OpenWebUIClient:
             f"Time: {captured_at.astimezone().isoformat()}\n"
             f"Image fingerprint: {image_fingerprint}\n"
             f"Application: {window.app_name}\n"
-            f"Window title: {window.title}"
+            f"Window title: {window.title}\n"
+            "keywordsには画像で確認できる重要な技術・概念・製品名を最大8個、"
+            "短い語句の配列で返してください。人名・メールアドレス・認証情報・"
+            "顧客情報・機密語は除外してください。"
         )
         payload = {
             "model": self.config.model,

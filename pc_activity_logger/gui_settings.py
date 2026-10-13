@@ -35,6 +35,7 @@ def default_values() -> dict[str, Any]:
         "max_tokens": 1024,
         "system_prompt": DEFAULT_ANALYSIS_SYSTEM_PROMPT,
         "interval_sec": 180,
+        "startup_delay_min": 3,
         "jpeg_quality": 80,
         "idle_threshold_sec": 300,
         "skip_same_screen": True,
@@ -44,6 +45,8 @@ def default_values() -> dict[str, Any]:
         "excluded_app_names": [],
         "excluded_window_titles": [],
         "data_dir": str(app_dir / "data"),
+        "markdown_enabled": True,
+        "obsidian_vault": str(app_dir / "data" / "obsidian"),
         "notes_enabled": True,
         "notes_title_prefix": "PC作業記録",
     }
@@ -67,6 +70,7 @@ def read_values(path: Path) -> dict[str, Any]:
             values[key] = ow[key]
     for key in (
         "interval_sec",
+        "startup_delay_min",
         "jpeg_quality",
         "idle_threshold_sec",
         "skip_same_screen",
@@ -83,6 +87,12 @@ def read_values(path: Path) -> dict[str, Any]:
         if not data_dir.is_absolute():
             data_dir = path.resolve().parent / data_dir
         values["data_dir"] = str(data_dir)
+    if "markdown_enabled" in storage:
+        values["markdown_enabled"] = storage["markdown_enabled"]
+    vault = Path(str(storage.get("obsidian_vault") or Path(values["data_dir"]) / "obsidian"))
+    if not vault.is_absolute():
+        vault = path.resolve().parent / vault
+    values["obsidian_vault"] = str(vault)
     if "enabled" in notes:
         values["notes_enabled"] = notes["enabled"]
     if "title_prefix" in notes:
@@ -95,6 +105,7 @@ def save_values(path: Path, values: dict[str, Any], api_key: str) -> Config:
         raise ValueError("OpenWebUI API Keyを入力してください")
     path.parent.mkdir(parents=True, exist_ok=True)
     data_dir = Path(str(values["data_dir"])).expanduser().resolve()
+    vault = Path(str(values.get("obsidian_vault") or data_dir / "obsidian")).expanduser().resolve()
     raw = {
         "openwebui": {
             "base_url": str(values["base_url"]).strip(),
@@ -105,6 +116,7 @@ def save_values(path: Path, values: dict[str, Any], api_key: str) -> Config:
         },
         "capture": {
             "interval_sec": int(values["interval_sec"]),
+            "startup_delay_min": int(values.get("startup_delay_min", 3)),
             "jpeg_quality": int(values["jpeg_quality"]),
             "idle_threshold_sec": int(values["idle_threshold_sec"]),
             "skip_same_screen": bool(values["skip_same_screen"]),
@@ -116,7 +128,11 @@ def save_values(path: Path, values: dict[str, Any], api_key: str) -> Config:
             "excluded_app_names": list(values["excluded_app_names"]),
             "excluded_window_titles": list(values["excluded_window_titles"]),
         },
-        "storage": {"data_dir": str(data_dir)},
+        "storage": {
+            "data_dir": str(data_dir),
+            "markdown_enabled": bool(values.get("markdown_enabled", True)),
+            "obsidian_vault": str(vault),
+        },
         "notes": {
             "enabled": bool(values["notes_enabled"]),
             "title_prefix": str(values["notes_title_prefix"]).strip(),

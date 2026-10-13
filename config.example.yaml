@@ -7,6 +7,7 @@ openwebui:
 
 capture:
   interval_sec: 180
+  startup_delay_min: 3
   jpeg_quality: 80
   idle_threshold_sec: 300
   skip_same_screen: true
@@ -18,6 +19,9 @@ capture:
 
 storage:
   data_dir: "data"
+  markdown_enabled: true
+  # Existing Obsidian vault root; omit to use data_dir/obsidian.
+  # obsidian_vault: "C:/Users/USER/Documents/MyVault"
 
 notes:
   enabled: true

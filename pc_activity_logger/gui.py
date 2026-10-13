@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStyle,
     QSystemTrayIcon,
@@ -46,6 +47,7 @@ from .gui_settings import (
     stored_api_key,
 )
 from .main import CaptureState, run_once
+from .markdown import export_markdown
 from .openwebui import OpenWebUIClient
 from .prompts import DEFAULT_ANALYSIS_SYSTEM_PROMPT
 from .windows import OpenWindow, get_open_windows
@@ -146,6 +148,23 @@ class ConnectionWorker(QThread):
                 client.close()
 
 
+class ExportWorker(QThread):
+    succeeded = Signal(str, int)
+    failed = Signal(str)
+
+    def __init__(self, source: Path, destination: Path) -> None:
+        super().__init__()
+        self.source = source
+        self.destination = destination
+
+    def run(self) -> None:
+        try:
+            count = export_markdown(self.source, self.destination)
+            self.succeeded.emit(str(self.destination), count)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class SignalLogHandler(logging.Handler):
     def __init__(self, callback: Any) -> None:
         super().__init__()
@@ -223,6 +242,7 @@ class MainWindow(QMainWindow):
         self.config_path = config_path
         self.worker: ActivityWorker | None = None
         self.connection_worker: ConnectionWorker | None = None
+        self.export_worker: ExportWorker | None = None
         self.really_quit = False
         self.setWindowTitle("PC Activity Logger")
         self.resize(760, 680)
@@ -261,6 +281,7 @@ class MainWindow(QMainWindow):
         capture_box = QGroupBox("撮影・スキップ")
         capture_form = QFormLayout(capture_box)
         self.interval_sec = self._spin(1, 86400)
+        self.startup_delay_min = self._spin(0, 1440)
         self.jpeg_quality = self._spin(1, 95)
         self.idle_threshold_sec = self._spin(0, 86400)
         self.skip_same_screen = QCheckBox("有効")
@@ -276,6 +297,7 @@ class MainWindow(QMainWindow):
         self.pick_window_button = QPushButton("開いているWindowから選択")
         self.pick_window_button.clicked.connect(self.pick_open_window)
         capture_form.addRow("撮影間隔（秒）", self.interval_sec)
+        capture_form.addRow("自動起動後の待機（分、0で即時）", self.startup_delay_min)
         capture_form.addRow("JPEG品質", self.jpeg_quality)
         capture_form.addRow("Idle判定（秒、0で無効）", self.idle_threshold_sec)
         capture_form.addRow("同一画面スキップ", self.skip_same_screen)
@@ -292,15 +314,23 @@ class MainWindow(QMainWindow):
         browse = QPushButton("参照")
         browse.clicked.connect(self.browse_data_dir)
         self.notes_enabled = QCheckBox("OpenWebUI Noteへ追記")
+        self.markdown_enabled = QCheckBox("記録ごとのObsidian Markdownも保存")
+        self.obsidian_vault = QLineEdit()
+        browse_vault = QPushButton("参照")
+        browse_vault.clicked.connect(self.browse_obsidian_vault)
         self.notes_title_prefix = QLineEdit()
         self.autostart = QCheckBox("Windowsログオン時に自動起動")
         storage_grid.addWidget(QLabel("保存先"), 0, 0)
         storage_grid.addWidget(self.data_dir, 0, 1)
         storage_grid.addWidget(browse, 0, 2)
-        storage_grid.addWidget(self.notes_enabled, 1, 1, 1, 2)
-        storage_grid.addWidget(QLabel("Noteタイトル接頭辞"), 2, 0)
-        storage_grid.addWidget(self.notes_title_prefix, 2, 1, 1, 2)
-        storage_grid.addWidget(self.autostart, 3, 1, 1, 2)
+        storage_grid.addWidget(self.markdown_enabled, 1, 1, 1, 2)
+        storage_grid.addWidget(QLabel("Obsidian Vault保存先"), 2, 0)
+        storage_grid.addWidget(self.obsidian_vault, 2, 1)
+        storage_grid.addWidget(browse_vault, 2, 2)
+        storage_grid.addWidget(self.notes_enabled, 3, 1, 1, 2)
+        storage_grid.addWidget(QLabel("Noteタイトル接頭辞"), 4, 0)
+        storage_grid.addWidget(self.notes_title_prefix, 4, 1, 1, 2)
+        storage_grid.addWidget(self.autostart, 5, 1, 1, 2)
 
         buttons = QHBoxLayout()
         self.test_button = QPushButton("接続テスト")
@@ -348,6 +378,26 @@ class MainWindow(QMainWindow):
         restore_prompt_button.clicked.connect(self.restore_default_system_prompt)
         prompt_layout.addWidget(restore_prompt_button)
 
+        history_page = QWidget()
+        history_layout = QVBoxLayout(history_page)
+        history_description = QLabel(
+            "1件の記録につき1つのMarkdownを作り、重要語等のノートで関連付けます。\n"
+            "APIキーやOpenWebUIへの接続は不要です。\n"
+            "Obsidian Vaultのルートフォルダーを保存先に選択してください。"
+        )
+        history_description.setWordWrap(True)
+        history_layout.addWidget(history_description)
+        self.export_button = QPushButton("JSONLを選んでObsidianへ書き出す")
+        self.export_button.clicked.connect(self.export_history)
+        history_layout.addWidget(self.export_button)
+        self.export_all_button = QPushButton("保存先の全履歴をObsidianへ書き出す")
+        self.export_all_button.clicked.connect(lambda: self.export_history(all_history=True))
+        history_layout.addWidget(self.export_all_button)
+        self.export_status = QLabel("")
+        self.export_status.setWordWrap(True)
+        history_layout.addWidget(self.export_status)
+        history_layout.addStretch()
+
         log_page = QWidget()
         log_layout = QVBoxLayout(log_page)
         self.log_view = QPlainTextEdit()
@@ -357,8 +407,12 @@ class MainWindow(QMainWindow):
         clear_button.clicked.connect(self.log_view.clear)
         log_layout.addWidget(clear_button)
 
-        tabs.addTab(settings_page, "設定")
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setWidget(settings_page)
+        tabs.addTab(settings_scroll, "設定")
         tabs.addTab(prompt_page, "システムプロンプト")
+        tabs.addTab(history_page, "履歴")
         tabs.addTab(log_page, "ログ")
         self.setCentralWidget(tabs)
 
@@ -424,6 +478,7 @@ class MainWindow(QMainWindow):
             self.max_tokens.setValue(int(values["max_tokens"]))
             self.system_prompt.setPlainText(str(values["system_prompt"]))
             self.interval_sec.setValue(int(values["interval_sec"]))
+            self.startup_delay_min.setValue(int(values["startup_delay_min"]))
             self.jpeg_quality.setValue(int(values["jpeg_quality"]))
             self.idle_threshold_sec.setValue(int(values["idle_threshold_sec"]))
             self.skip_same_screen.setChecked(bool(values["skip_same_screen"]))
@@ -443,6 +498,8 @@ class MainWindow(QMainWindow):
                 "\n".join(str(item) for item in values["excluded_window_titles"])
             )
             self.data_dir.setText(str(values["data_dir"]))
+            self.markdown_enabled.setChecked(bool(values["markdown_enabled"]))
+            self.obsidian_vault.setText(str(values["obsidian_vault"]))
             self.notes_enabled.setChecked(bool(values["notes_enabled"]))
             self.notes_title_prefix.setText(str(values["notes_title_prefix"]))
         except Exception as exc:
@@ -456,6 +513,7 @@ class MainWindow(QMainWindow):
             "max_tokens": self.max_tokens.value(),
             "system_prompt": self.system_prompt.toPlainText(),
             "interval_sec": self.interval_sec.value(),
+            "startup_delay_min": self.startup_delay_min.value(),
             "jpeg_quality": self.jpeg_quality.value(),
             "idle_threshold_sec": self.idle_threshold_sec.value(),
             "skip_same_screen": self.skip_same_screen.isChecked(),
@@ -467,6 +525,8 @@ class MainWindow(QMainWindow):
                 self.excluded_window_titles
             ),
             "data_dir": self.data_dir.text(),
+            "markdown_enabled": self.markdown_enabled.isChecked(),
+            "obsidian_vault": self.obsidian_vault.text(),
             "notes_enabled": self.notes_enabled.isChecked(),
             "notes_title_prefix": self.notes_title_prefix.text(),
         }
@@ -538,7 +598,7 @@ class MainWindow(QMainWindow):
         if config is None:
             self.show_window()
             return
-        initial_delay = config.capture.interval_sec if delay_first_capture else 0
+        initial_delay = config.capture.startup_delay_min * 60 if delay_first_capture else 0
         self.worker = ActivityWorker(config, initial_delay_sec=initial_delay)
         self.worker.status_changed.connect(self.status.setText)
         self.worker.finished.connect(self._worker_finished)
@@ -564,6 +624,50 @@ class MainWindow(QMainWindow):
         )
         if selected:
             self.data_dir.setText(selected)
+
+    def browse_obsidian_vault(self) -> None:
+        selected = QFileDialog.getExistingDirectory(
+            self, "Obsidian Vaultのルートフォルダーを選択", self.obsidian_vault.text()
+        )
+        if selected:
+            self.obsidian_vault.setText(selected)
+
+    def export_history(self, _checked: bool = False, all_history: bool = False) -> None:
+        if self.export_worker and self.export_worker.isRunning():
+            return
+        if all_history:
+            source = self.data_dir.text()
+        else:
+            source, _ = QFileDialog.getOpenFileName(
+                self, "書き出す履歴を選択", self.data_dir.text(), "履歴 JSONL (*.jsonl)"
+            )
+        if not source:
+            return
+        destination = QFileDialog.getExistingDirectory(
+            self, "Obsidian Vaultのルートフォルダーを選択", self.obsidian_vault.text()
+        )
+        if not destination:
+            return
+        output_path = Path(destination)
+        self.export_worker = ExportWorker(Path(source), output_path)
+        self.export_worker.succeeded.connect(self._export_succeeded)
+        self.export_worker.failed.connect(self._export_failed)
+        self.export_worker.finished.connect(self._export_finished)
+        self.export_button.setEnabled(False)
+        self.export_all_button.setEnabled(False)
+        self.export_status.setText("Markdownへ書き出しています…")
+        self.export_worker.start()
+
+    def _export_finished(self) -> None:
+        self.export_button.setEnabled(True)
+        self.export_all_button.setEnabled(True)
+
+    def _export_succeeded(self, destination: str, count: int) -> None:
+        self.export_status.setText(f"{count}件の履歴を書き出しました。\n{destination}")
+
+    def _export_failed(self, message: str) -> None:
+        self.export_status.setText("書き出しに失敗しました。")
+        QMessageBox.critical(self, "履歴の書き出しエラー", message)
 
     def restore_default_system_prompt(self) -> None:
         self.system_prompt.setPlainText(DEFAULT_ANALYSIS_SYSTEM_PROMPT)
@@ -617,6 +721,9 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait()
+        for worker in (self.connection_worker, self.export_worker):
+            if worker and worker.isRunning():
+                worker.wait()
         QApplication.instance().quit()
 
 
