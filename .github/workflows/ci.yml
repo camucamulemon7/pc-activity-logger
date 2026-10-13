@@ -50,3 +50,19 @@ jobs:
         run: python -m compileall -q pc_activity_logger tests
       - name: Run all unit tests
         run: python -m unittest discover -s tests -v
+      - name: Diagnose Qt teardown failure
+        if: failure() && runner.os == 'Linux' && matrix.python == '3.10'
+        run: |
+          python - <<'PY'
+          import ast
+          import subprocess
+          import sys
+          from pathlib import Path
+          tree = ast.parse(Path('tests/test_gui.py').read_text(encoding='utf-8'))
+          names = [node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name.startswith('test_')]
+          for name in names:
+              result = subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_gui.py', '-k', name, '-q'], capture_output=True, text=True)
+              print(name, 'exit=', result.returncode, flush=True)
+              if result.returncode:
+                  print(result.stderr[-1800:], flush=True)
+          PY
