@@ -330,6 +330,9 @@ class MainWindow(QMainWindow):
         capture_form.addRow("除外アプリ名（部分一致）", self.excluded_app_names)
         capture_form.addRow("除外タイトル（部分一致）", self.excluded_window_titles)
         capture_form.addRow("", self.pick_window_button)
+        low_load_button = QPushButton("低負荷設定を適用")
+        low_load_button.clicked.connect(self.apply_low_load_settings)
+        capture_form.addRow("", low_load_button)
 
         storage_box = QGroupBox("保存・連携")
         storage_grid = QGridLayout(storage_box)
@@ -339,6 +342,7 @@ class MainWindow(QMainWindow):
         self.notes_enabled = QCheckBox("OpenWebUI Noteへ追記")
         self.markdown_enabled = QCheckBox("記録ごとのObsidian Markdownも保存")
         self.retention_days = self._spin(0, 3650)
+        self.save_monitor_screenshot = QCheckBox("モニター全体の画像も保存（負荷が増えます）")
         self.obsidian_vault = QLineEdit()
         browse_vault = QPushButton("参照")
         browse_vault.clicked.connect(self.browse_obsidian_vault)
@@ -356,7 +360,8 @@ class MainWindow(QMainWindow):
         storage_grid.addWidget(self.notes_title_prefix, 4, 1, 1, 2)
         storage_grid.addWidget(QLabel("画像の保持日数（0で無期限）"), 5, 0)
         storage_grid.addWidget(self.retention_days, 5, 1, 1, 2)
-        storage_grid.addWidget(self.autostart, 6, 1, 1, 2)
+        storage_grid.addWidget(self.save_monitor_screenshot, 6, 1, 1, 2)
+        storage_grid.addWidget(self.autostart, 7, 1, 1, 2)
 
         buttons = QHBoxLayout()
         self.test_button = QPushButton("接続テスト")
@@ -439,6 +444,7 @@ class MainWindow(QMainWindow):
         log_layout = QVBoxLayout(log_page)
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
+        self.log_view.setMaximumBlockCount(2000)
         log_layout.addWidget(self.log_view)
         clear_button = QPushButton("表示をクリア")
         clear_button.clicked.connect(self.log_view.clear)
@@ -544,6 +550,7 @@ class MainWindow(QMainWindow):
             self.data_dir.setText(str(values["data_dir"]))
             self.markdown_enabled.setChecked(bool(values["markdown_enabled"]))
             self.retention_days.setValue(max(0, int(values["retention_days"])))
+            self.save_monitor_screenshot.setChecked(bool(values["save_monitor_screenshot"]))
             self.obsidian_vault.setText(str(values["obsidian_vault"]))
             self.notes_enabled.setChecked(bool(values["notes_enabled"]))
             self.notes_title_prefix.setText(str(values["notes_title_prefix"]))
@@ -576,6 +583,7 @@ class MainWindow(QMainWindow):
             "data_dir": self.data_dir.text(),
             "markdown_enabled": self.markdown_enabled.isChecked(),
             "retention_days": self.retention_days.value(),
+            "save_monitor_screenshot": self.save_monitor_screenshot.isChecked(),
             "obsidian_vault": self.obsidian_vault.text(),
             "notes_enabled": self.notes_enabled.isChecked(),
             "notes_title_prefix": self.notes_title_prefix.text(),
@@ -654,7 +662,8 @@ class MainWindow(QMainWindow):
         self.worker.cycle_completed.connect(self._cycle_completed)
         self.worker.next_capture_at.connect(self._set_next_capture)
         self.worker.finished.connect(self._worker_finished)
-        self.countdown_timer.start(1000)
+        if self.isVisible():
+            self.countdown_timer.start(1000)
         self.worker.start()
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
@@ -712,6 +721,14 @@ class MainWindow(QMainWindow):
         )
         if selected:
             self.data_dir.setText(selected)
+
+    def apply_low_load_settings(self) -> None:
+        self.interval_sec.setValue(300)
+        self.jpeg_quality.setValue(65)
+        self.skip_same_screen.setChecked(True)
+        self.same_screen_force_after_sec.setValue(1800)
+        self.save_monitor_screenshot.setChecked(False)
+        self.status.setText("低負荷設定に変更しました。設定を保存してください")
 
     def browse_obsidian_vault(self) -> None:
         selected = QFileDialog.getExistingDirectory(
@@ -791,6 +808,9 @@ class MainWindow(QMainWindow):
 
     def show_window(self) -> None:
         self.show()
+        if self.worker and self.worker.isRunning():
+            self._update_countdown()
+            self.countdown_timer.start(1000)
         self.raise_()
         self.activateWindow()
 
@@ -799,6 +819,7 @@ class MainWindow(QMainWindow):
             event.accept()
         else:
             event.ignore()
+            self.countdown_timer.stop()
             self.hide()
             self.tray.showMessage(
                 "PC Activity Logger", "バックグラウンドで動作しています"

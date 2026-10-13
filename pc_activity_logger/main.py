@@ -100,20 +100,22 @@ def run_once(
         return CycleResult("excluded")
 
     try:
-        active_window_crop_box(window.monitor, window.window_rect)
+        crop_box = active_window_crop_box(window.monitor, window.window_rect)
     except UnsafeCaptureError:
         LOGGER.info("Skipping capture; foreground region is too small or unavailable")
         return CycleResult("unsafe")
 
     captured_at = datetime.now().astimezone()
     LOGGER.info("Capturing %s (%s)", window.app_name, window.title)
-    image = capture_monitor(window.monitor, config.capture.jpeg_quality)
-    analysis_image = crop_to_active_window(
-        image,
-        window.monitor,
-        window.window_rect,
-        config.capture.jpeg_quality,
-    )
+    image = None
+    if config.storage.save_monitor_screenshot:
+        image = capture_monitor(window.monitor, config.capture.jpeg_quality)
+        analysis_image = crop_to_active_window(image, window.monitor, window.window_rect, config.capture.jpeg_quality)
+    else:
+        region = {"left": window.monitor["left"] + crop_box[0],
+                  "top": window.monitor["top"] + crop_box[1],
+                  "width": crop_box[2] - crop_box[0], "height": crop_box[3] - crop_box[1]}
+        analysis_image = capture_monitor(region, config.capture.jpeg_quality)
     current_hash = difference_hash(analysis_image)
     now = time.monotonic()
     if (
@@ -135,9 +137,9 @@ def run_once(
             )
             return CycleResult("unchanged")
 
-    monitor_screenshot_path = save_screenshot(
-        config.storage.data_dir, captured_at, image, "monitor"
-    )
+    monitor_screenshot_path = None
+    if image is not None:
+        monitor_screenshot_path = save_screenshot(config.storage.data_dir, captured_at, image, "monitor")
     screenshot_path = save_screenshot(
         config.storage.data_dir, captured_at, analysis_image, "active"
     )
@@ -159,11 +161,11 @@ def run_once(
             "monitor": window.monitor,
             "window_rect": window.window_rect,
             "screenshot": str(screenshot_path.relative_to(config.storage.data_dir)),
-            "monitor_screenshot": str(
-                monitor_screenshot_path.relative_to(config.storage.data_dir)
-            ),
+            "interval_sec": config.capture.interval_sec,
             **analysis.as_dict(),
         }
+        if monitor_screenshot_path is not None:
+            record["monitor_screenshot"] = str(monitor_screenshot_path.relative_to(config.storage.data_dir))
         activity_path = append_activity(config.storage.data_dir, captured_at, record)
         if state is not None:
             state.last_analyzed_hash = current_hash

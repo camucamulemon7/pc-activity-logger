@@ -2,7 +2,7 @@
 
 Windowsの前面ウィンドウを定期的に撮影し、OpenWebUI経由でVisionモデルに解析させ、作業内容をJSONLとOpenWebUI Noteへ記録するツールです。
 
-画面全体ではなく前面ウィンドウ部分をAIへ送り、Idle中、Windowsロック中、切断セッション中、前回と同一の画面では解析をスキップします。
+既定では前面ウィンドウ領域だけを撮影・保存してAIへ送り、Idle中、Windowsロック中、切断セッション中、前回と同一の画面では解析をスキップします。
 
 > [!CAUTION]
 > スクリーンショットには個人情報、認証情報、顧客情報などが含まれる可能性があります。社給PCでは、導入前に所属組織の情報セキュリティ規程を確認してください。
@@ -10,7 +10,7 @@ Windowsの前面ウィンドウを定期的に撮影し、OpenWebUI経由でVisi
 ## 主な機能
 
 - アクティブウィンドウ、実行ファイル名、ウィンドウタイトルの取得
-- アクティブウィンドウが属するモニターの撮影
+- 前面ウィンドウ領域だけの撮影と、任意のモニター全体画像保存
 - AIへ送る画像を前面ウィンドウ領域へ切り出し
 - OpenWebUI Files APIへの一時アップロード（`process=false`）
 - OpenWebUI Chat Completions APIによるVision解析
@@ -37,7 +37,7 @@ Windowsの前面ウィンドウを定期的に撮影し、OpenWebUI経由でVisi
 Windows
   ├─ セッション状態・Idle状態を確認
   ├─ アクティブウィンドウと対象モニターを取得
-  ├─ モニター撮影・前面ウィンドウへ切り出し
+  ├─ 前面ウィンドウ領域を撮影（全画面画像保存時は切り出し）
   ├─ 前回と同じ画面ならスキップ
   ├─ OpenWebUI Files APIへ一時アップロード
   ├─ file_idを使ってVisionモデルへ解析依頼
@@ -181,6 +181,7 @@ storage:
   data_dir: "data"
   markdown_enabled: true
   retention_days: 14
+  save_monitor_screenshot: false
   # 既存のObsidian Vaultへ保存する場合は、そのルートフォルダーを指定
   # obsidian_vault: "C:/Users/USER/Documents/MyVault"
 
@@ -252,6 +253,7 @@ GUI版では「開いているWindowから選択」を押すと、現在表示�
 | `storage.markdown_enabled` | 記録ごとのMarkdown自動保存。既定`true`。JSONLの保存とは独立 |
 | `storage.obsidian_vault` | Obsidian Vaultのルートフォルダー。省略時は`data_dir/obsidian`。相対パスは設定ファイルの場所が基準 |
 | `storage.retention_days` | 当日を含む画像の保持日数。既定`14`。`0`または負数で無期限保持（GUIでは`0`） |
+| `storage.save_monitor_screenshot` | モニター全体画像も保存するか。既定`false`は前面領域だけを撮影し、圧縮・保存負荷を削減 |
 
 画像の整理は記録開始時と日付が変わった後の周期で行います。日付フォルダーの` screenshots/`内にある、本ツールの命名形式の`active`・`monitor` JPEGだけを削除し、JSONL・Markdown・その他のファイルは残します。シンボリックリンクや別の場所へ向いたディレクトリは対象にしません。
 
@@ -398,7 +400,7 @@ data/
 ```
 
 - `*_active.jpg`: AI解析に使用した前面ウィンドウ画像
-- `*_monitor.jpg`: 前面ウィンドウが存在するモニター全体の画像
+- `*_monitor.jpg`: モニター全体画像。`save_monitor_screenshot: true`のときだけ保存
 - `activity.jsonl`: 時刻、アプリ、ウィンドウ情報、画像パス、解析結果
 - `Records/.../*.md`: 記録ごとのMarkdown。記録時のタイムゾーンを保持し、タグと関連ノートへリンク
 - `Topics/`等のMarkdown: 共通の重要語・プロジェクト等で記録を結ぶノート
@@ -453,10 +455,18 @@ GitHub ActionsのCIはpushとpull requestで起動し、Linux（Ubuntu）とWind
 - GUI版のAPIキーはWindows Credential Managerへ保存され、GUI版の`config.yaml`には含まれません。
 - APIキーをREADME、Issue、ログへ貼り付けないでください。
 - OpenWebUIまでの通信経路とデータ保存先を保護してください。
-- Windows側には前面画像とモニター全体画像が保存されます。
+- Windows側には前面画像が保存され、任意設定でモニター全体画像も保存されます。
 - API失敗時はトラブルシューティングのためローカル画像が残ります。
 - 解析失敗時もOpenWebUI側の一時画像を削除します。
 - プロセス強制終了や通信障害のタイミングによっては、OpenWebUI側に一時ファイルが残る可能性があります。
+
+## 常駐時の負荷
+
+待機中の撮影ワーカーはイベント待ちです。カウントダウンはGUI表示中・記録中だけ1秒間隔で更新し、トレイ格納中と停止中はタイマーを止めます。GUIのログ表示は最新2,000行に制限し、長期常駐によるメモリ増加を抑えます。保存済みログは従来どおりサイズ上限付きでローテーションします。
+
+「低負荷設定を適用」を押すと、撮影間隔5分・JPEG品質65・同一画面スキップ有効・同一画面の強制再解析30分・前面領域のみ保存になります。反映には「設定を保存」を押してください。待機・除外・ロック中は撮影しません。同一画面の判定には撮影が必要ですが、解析・保存・アップロードを省略します。既定でも全画面JPEGの生成・再切り抜き・保存は行いません。モデル推論はOpenWebUI側で行われ、別サーバーなら記録PCの推論負荷はありません。
+
+参考として、Mac上で合成1920×1080画面から1280×720の前面領域を処理した40回の測定では、JPEG処理とハッシュ計算の中央値は全画面経由21.7ms、前面領域だけ7.7msでした。画面取得・通信・保存を含まず、Windows実機のCPU・メモリ使用量を表す値ではありません。
 
 ## 現在未実装の機能
 

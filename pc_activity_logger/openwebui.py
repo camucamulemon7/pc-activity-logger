@@ -443,9 +443,8 @@ class OpenWebUIClient:
         window: ActiveWindow,
         file_id: str | None = None,
     ) -> Analysis:
-        image_data = base64.b64encode(image_bytes).decode("ascii")
         image_fingerprint = hashlib.sha256(image_bytes).hexdigest()
-        image_url = file_id or f"data:image/jpeg;base64,{image_data}"
+        image_url = file_id or f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('ascii')}"
         user_text = (
             "次の前面ウィンドウ情報と添付画像を解析してください。\n"
             f"Time: {captured_at.astimezone().isoformat()}\n"

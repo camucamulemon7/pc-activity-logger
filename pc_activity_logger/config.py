@@ -43,6 +43,7 @@ class StorageConfig:
     markdown_enabled: bool = True
     obsidian_vault: Path | None = None
     retention_days: int = 14
+    save_monitor_screenshot: bool = False
 
 
 @dataclass(frozen=True)
@@ -169,6 +170,9 @@ def load_config(path: Path, api_key_override: str | None = None) -> Config:
         data_dir = config_dir / data_dir
     markdown_enabled = storage.get("markdown_enabled", True)
     retention_days = _integer(storage, "retention_days", 14, "storage")
+    save_monitor = storage.get("save_monitor_screenshot", False)
+    if not isinstance(save_monitor, bool):
+        raise ValueError("storage.save_monitor_screenshot must be true or false")
     if not isinstance(markdown_enabled, bool):
         raise ValueError("storage.markdown_enabled must be true or false")
     vault_value = storage.get("obsidian_vault")
@@ -214,6 +218,7 @@ def load_config(path: Path, api_key_override: str | None = None) -> Config:
         storage=StorageConfig(
             data_dir=data_dir, markdown_enabled=markdown_enabled, obsidian_vault=obsidian_vault,
             retention_days=retention_days,
+            save_monitor_screenshot=save_monitor,
         ),
         notes=NotesConfig(enabled=notes_enabled, title_prefix=title_prefix.strip()),
     )

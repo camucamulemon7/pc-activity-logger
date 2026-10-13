@@ -10,6 +10,15 @@ from pc_activity_logger.gui import ActivityWorker, ConnectionWorker, ExportWorke
 
 
 class ActivityWorkerTests(unittest.TestCase):
+    def test_low_load_settings_reduce_capture_frequency_and_disable_full_monitor_saves(self) -> None:
+        window = Mock()
+        MainWindow.apply_low_load_settings(window)
+        window.interval_sec.setValue.assert_called_once_with(300)
+        window.jpeg_quality.setValue.assert_called_once_with(65)
+        window.save_monitor_screenshot.setChecked.assert_called_once_with(False)
+        window.skip_same_screen.setChecked.assert_called_once_with(True)
+        window.save_settings.assert_not_called()
+
     def test_latest_record_survives_subsequent_idle_status(self) -> None:
         window = Mock()
         result = CycleResult("recorded", {"timestamp": "2026-10-14T14:25:30+09:00",
