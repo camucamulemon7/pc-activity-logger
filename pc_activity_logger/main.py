@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .capture import capture_monitor, crop_to_active_window, difference_hash, hash_distance
 from .config import Config, load_config
+from .markdown import write_activity_markdown
 from .openwebui import OpenWebUIClient
 from .storage import append_activity, save_screenshot
 from .windows import (
@@ -136,6 +137,12 @@ def run_once(
             LOGGER.info("Deleted temporary OpenWebUI File: %s", file_id)
         except Exception:
             LOGGER.exception("Failed to delete temporary OpenWebUI File: %s", file_id)
+    if config.storage.markdown_enabled:
+        try:
+            vault = config.storage.obsidian_vault or config.storage.data_dir / "obsidian"
+            write_activity_markdown(record, vault)
+        except (OSError, ValueError):
+            LOGGER.exception("Markdown export failed; local JSONL record was preserved")
     if config.notes.enabled:
         try:
             note_id = client.append_daily_note(
@@ -157,8 +164,12 @@ def run_once(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Windows PC activity logger")
     parser.add_argument("--config", type=Path, default=Path("config.yaml"))
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--once", action="store_true", help="Capture once and exit instead of looping"
+    )
+    mode.add_argument(
+        "--background", action="store_true", help="Wait startup_delay_min before the first capture"
     )
     return parser.parse_args(argv)
 
@@ -184,6 +195,8 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             LOGGER.exception("Capture cycle failed")
             return 1
+        finally:
+            client.close()
 
     stop = False
 
@@ -194,16 +207,24 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
     LOGGER.info("Started; capture interval is %d seconds", config.capture.interval_sec)
-    while not stop:
-        started = time.monotonic()
-        try:
-            run_once(config, client, state)
-        except Exception:
-            LOGGER.exception("Capture cycle failed")
-        remaining = max(0.0, config.capture.interval_sec - (time.monotonic() - started))
-        deadline = time.monotonic() + remaining
+    def wait_until(deadline: float) -> None:
         while not stop and time.monotonic() < deadline:
-            time.sleep(min(1.0, deadline - time.monotonic()))
+            time.sleep(max(0.0, min(1.0, deadline - time.monotonic())))
+
+    try:
+        if args.background and config.capture.startup_delay_min:
+            LOGGER.info("Waiting %d minutes before the first capture", config.capture.startup_delay_min)
+            wait_until(time.monotonic() + config.capture.startup_delay_min * 60)
+        while not stop:
+            started = time.monotonic()
+            try:
+                run_once(config, client, state)
+            except Exception:
+                LOGGER.exception("Capture cycle failed")
+            remaining = max(0.0, config.capture.interval_sec - (time.monotonic() - started))
+            wait_until(time.monotonic() + remaining)
+    finally:
+        client.close()
     LOGGER.info("Stopped")
     return 0
 

@@ -30,11 +30,14 @@ class CaptureConfig:
     skip_unavailable_session: bool = True
     excluded_app_names: tuple[str, ...] = ()
     excluded_window_titles: tuple[str, ...] = ()
+    startup_delay_min: int = 3
 
 
 @dataclass(frozen=True)
 class StorageConfig:
     data_dir: Path = Path("data")
+    markdown_enabled: bool = True
+    obsidian_vault: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +107,7 @@ def load_config(path: Path, api_key_override: str | None = None) -> Config:
         raise ValueError("Replace openwebui.api_key in config.yaml")
 
     interval = _integer(cap, "interval_sec", 180, "capture")
+    startup_delay_min = _integer(cap, "startup_delay_min", 3, "capture")
     quality = _integer(cap, "jpeg_quality", 80, "capture")
     idle_threshold = _integer(cap, "idle_threshold_sec", 300, "capture")
     skip_same_screen = cap.get("skip_same_screen", True)
@@ -117,6 +121,8 @@ def load_config(path: Path, api_key_override: str | None = None) -> Config:
     system_prompt = ow.get("system_prompt", DEFAULT_ANALYSIS_SYSTEM_PROMPT)
     if interval < 1:
         raise ValueError("capture.interval_sec must be at least 1")
+    if startup_delay_min < 0:
+        raise ValueError("capture.startup_delay_min must be zero or greater")
     if not 1 <= quality <= 95:
         raise ValueError("capture.jpeg_quality must be between 1 and 95")
     if idle_threshold < 0:
@@ -144,6 +150,17 @@ def load_config(path: Path, api_key_override: str | None = None) -> Config:
     data_dir = Path(data_dir_value)
     if not data_dir.is_absolute():
         data_dir = config_dir / data_dir
+    markdown_enabled = storage.get("markdown_enabled", True)
+    if not isinstance(markdown_enabled, bool):
+        raise ValueError("storage.markdown_enabled must be true or false")
+    vault_value = storage.get("obsidian_vault")
+    obsidian_vault = None
+    if vault_value is not None:
+        if not isinstance(vault_value, str) or not vault_value.strip() or "\x00" in vault_value:
+            raise ValueError("storage.obsidian_vault must be a non-empty path string without null bytes")
+        obsidian_vault = Path(vault_value)
+        if not obsidian_vault.is_absolute():
+            obsidian_vault = config_dir / obsidian_vault
     notes_enabled = notes.get("enabled", False)
     if not isinstance(notes_enabled, bool):
         raise ValueError("notes.enabled must be true or false")
@@ -170,7 +187,10 @@ def load_config(path: Path, api_key_override: str | None = None) -> Config:
             skip_unavailable_session=skip_unavailable_session,
             excluded_app_names=excluded_app_names,
             excluded_window_titles=excluded_window_titles,
+            startup_delay_min=startup_delay_min,
         ),
-        storage=StorageConfig(data_dir=data_dir),
+        storage=StorageConfig(
+            data_dir=data_dir, markdown_enabled=markdown_enabled, obsidian_vault=obsidian_vault,
+        ),
         notes=NotesConfig(enabled=notes_enabled, title_prefix=title_prefix.strip()),
     )

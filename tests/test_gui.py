@@ -1,11 +1,53 @@
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from pc_activity_logger.gui import ActivityWorker, ConnectionWorker, MainWindow
+from pc_activity_logger.gui import ActivityWorker, ConnectionWorker, ExportWorker, MainWindow
 
 
 class ActivityWorkerTests(unittest.TestCase):
+    def test_automatic_start_uses_independent_delay_but_manual_start_is_immediate(self) -> None:
+        for automatic, expected in ((True, 300), (False, 0)):
+            with self.subTest(automatic=automatic):
+                window = Mock()
+                window.worker = None
+                config = SimpleNamespace(capture=SimpleNamespace(interval_sec=60, startup_delay_min=5))
+                window.save_settings.return_value = config
+                with patch("pc_activity_logger.gui.ActivityWorker") as create:
+                    MainWindow.start_logging(window, delay_first_capture=automatic)
+                create.assert_called_once_with(config, initial_delay_sec=expected)
+
+    def test_export_worker_emits_success_or_actionable_failure(self) -> None:
+        for failure in (False, True):
+            with self.subTest(failure=failure):
+                worker = ExportWorker(Path("activity.jsonl"), Path("vault"))
+                signals = []
+                worker.succeeded.connect(lambda path, count: signals.append((path, count)))
+                worker.failed.connect(lambda message: signals.append(message))
+                with patch("pc_activity_logger.gui.export_markdown", return_value=2,
+                           side_effect=ValueError("line 2: invalid history") if failure else None):
+                    worker.run()
+                self.assertEqual(signals, ["line 2: invalid history"] if failure else [("vault", 2)])
+
+    def test_gui_history_export_does_not_require_saved_settings_or_api_key(self) -> None:
+        for all_history in (False, True):
+            with self.subTest(all_history=all_history):
+                window = Mock()
+                window.export_worker = None
+                window.data_dir.text.return_value = "data"
+                window.obsidian_vault.text.return_value = "vault"
+                with patch("pc_activity_logger.gui.QFileDialog.getOpenFileName", return_value=("history.jsonl", "")) as select, patch(
+                    "pc_activity_logger.gui.QFileDialog.getExistingDirectory", return_value="vault"
+                ), patch("pc_activity_logger.gui.ExportWorker") as create:
+                    MainWindow.export_history(window, all_history=all_history)
+                create.assert_called_once_with(Path("data" if all_history else "history.jsonl"), Path("vault"))
+                window.save_settings.assert_not_called()
+                window.export_button.setEnabled.assert_called_once_with(False)
+                window.export_all_button.setEnabled.assert_called_once_with(False)
+                if all_history:
+                    select.assert_not_called()
+
     def test_updates_running_configuration(self) -> None:
         original = SimpleNamespace(name="original")
         updated = SimpleNamespace(name="updated")

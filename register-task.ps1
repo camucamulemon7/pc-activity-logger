@@ -33,7 +33,7 @@ if (-not [string]::IsNullOrWhiteSpace($Executable)) {
 } else {
     $program = Join-Path $projectDirectory ".venv\Scripts\pythonw.exe"
     $module = if ($Gui) { "pc_activity_logger.gui" } else { "pc_activity_logger.main" }
-    $modeArguments = if ($Gui) { " --background" } else { "" }
+    $modeArguments = " --background"
     $programArguments = '-m {0}{1} --config "{2}"' -f $module, $modeArguments, $configPath.Replace('"', '\"')
 }
 if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {

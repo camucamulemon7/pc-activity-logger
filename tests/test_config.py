@@ -25,7 +25,9 @@ storage:
             config = load_config(config_path)
             self.assertEqual(config.openwebui.base_url, "http://localhost:8080/api")
             self.assertEqual(config.storage.data_dir, Path(temporary).resolve() / "records")
+            self.assertTrue(config.storage.markdown_enabled)
             self.assertEqual(config.capture.idle_threshold_sec, 300)
+            self.assertEqual(config.capture.startup_delay_min, 3)
             self.assertTrue(config.capture.skip_same_screen)
             self.assertEqual(config.capture.same_screen_max_distance, 3)
             self.assertEqual(config.capture.same_screen_force_after_sec, 900)
@@ -119,6 +121,7 @@ capture:
             "openwebui": ("timeout_sec", "max_tokens"),
             "capture": (
                 "interval_sec", "jpeg_quality", "idle_threshold_sec",
+                "startup_delay_min",
                 "same_screen_max_distance", "same_screen_force_after_sec",
             ),
         }
@@ -149,6 +152,45 @@ capture:
                     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
                     with self.assertRaisesRegex(ValueError, "storage.data_dir"):
                         load_config(path)
+
+    def test_validates_markdown_storage_setting(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.yaml"
+            for value in (False, True, "false", None, 0):
+                with self.subTest(value=value):
+                    raw = {"openwebui": {
+                        "base_url": "http://localhost/api", "api_key": "synthetic", "model": "model",
+                    }, "storage": {"markdown_enabled": value}}
+                    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+                    if isinstance(value, bool):
+                        self.assertEqual(load_config(path).storage.markdown_enabled, value)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "storage.markdown_enabled"):
+                            load_config(path)
+
+    def test_independent_startup_delay_and_vault_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.yaml"
+            raw = {"openwebui": {
+                "base_url": "http://localhost/api", "api_key": "synthetic", "model": "model",
+            }, "capture": {"interval_sec": 60, "startup_delay_min": 5},
+                "storage": {"obsidian_vault": "vault"}}
+            path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+            config = load_config(path)
+            self.assertEqual(config.capture.startup_delay_min, 5)
+            self.assertEqual(config.capture.interval_sec, 60)
+            self.assertEqual(config.storage.obsidian_vault, path.parent.resolve() / "vault")
+            for invalid in ("", True, [], "bad\x00path"):
+                with self.subTest(invalid=invalid):
+                    raw["storage"]["obsidian_vault"] = invalid
+                    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "storage.obsidian_vault"):
+                        load_config(path)
+            raw["storage"] = {}
+            raw["capture"]["startup_delay_min"] = -1
+            path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "startup_delay_min"):
+                load_config(path)
 
     def test_accepts_quoted_integers_and_trims_connection_values(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

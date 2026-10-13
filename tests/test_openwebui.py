@@ -1,3 +1,4 @@
+import json
 import unittest
 from datetime import datetime
 from unittest.mock import Mock, patch
@@ -17,6 +18,18 @@ from pc_activity_logger.windows import ActiveWindow
 
 
 class ModelResponseTests(unittest.TestCase):
+    def test_keywords_are_validated_normalized_and_saved(self) -> None:
+        value = {"activity": "実装を確認", "project": "p", "category": "development",
+                 "detail": "画像の内容を確認", "confidence": 0.9,
+                 "keywords": ["Python", "Ｐｙｔｈｏｎ", " Obsidian ", "ナレッジグラフ"]}
+        analysis = _validate(value)
+        self.assertEqual(analysis.keywords, ("Python", "Obsidian", "ナレッジグラフ"))
+        self.assertEqual(analysis.as_dict()["keywords"], list(analysis.keywords))
+        self.assertEqual(_message_text({"reasoning_content": json.dumps(value)}), json.dumps(value))
+        for keywords in (None, "Python", [True], [""], ["a" * 65], ["㍍" * 64], ["x"] * 9):
+            with self.subTest(keywords=keywords), self.assertRaisesRegex(ValueError, "keywords"):
+                _validate({**value, "keywords": keywords})
+
     def test_sets_openwebui_client_user_agent_header(self) -> None:
         client = OpenWebUIClient(
             OpenWebUIConfig("http://localhost:8080/api", "secret", "model")

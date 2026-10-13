@@ -67,6 +67,23 @@ class GuiSettingsTests(unittest.TestCase):
             self.assertEqual(config.capture.excluded_app_names, ())
             self.assertEqual(config.storage.data_dir, Path(temporary).resolve() / "records")
             self.assertFalse(config.notes.enabled)
+            self.assertTrue(config.storage.markdown_enabled)
+            self.assertEqual(config.capture.startup_delay_min, 3)
+            self.assertEqual(config.storage.obsidian_vault, config.storage.data_dir / "obsidian")
+
+    def test_round_trips_disabled_markdown_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.yaml"
+            values = default_values()
+            values["markdown_enabled"] = False
+            values["startup_delay_min"] = 5
+            values["obsidian_vault"] = str(Path(temporary) / "vault")
+            with patch("pc_activity_logger.gui_settings.keyring.set_password"):
+                config = save_values(path, values, "synthetic")
+            self.assertFalse(config.storage.markdown_enabled)
+            self.assertFalse(read_values(path)["markdown_enabled"])
+            self.assertEqual(read_values(path)["startup_delay_min"], 5)
+            self.assertEqual(config.storage.obsidian_vault, (Path(temporary) / "vault").resolve())
 
     def test_invalid_settings_preserve_existing_file_and_do_not_write_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

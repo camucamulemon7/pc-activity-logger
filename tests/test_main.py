@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+import signal
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -11,20 +12,52 @@ from pc_activity_logger.config import (
     OpenWebUIConfig,
     StorageConfig,
 )
-from pc_activity_logger.main import CaptureState, run_once
+from pc_activity_logger.main import CaptureState, main, run_once
 from pc_activity_logger.openwebui import Analysis
 from pc_activity_logger.windows import ActiveWindow
 
 
 class MainTests(unittest.TestCase):
+    def test_cli_startup_delay_can_be_stopped_before_capture_and_closes_client(self) -> None:
+        config = Config(OpenWebUIConfig("http://localhost/api", "synthetic", "model"),
+                        CaptureConfig(interval_sec=60, startup_delay_min=5), StorageConfig(), NotesConfig())
+        handlers = {}
+        def register(signum, handler):
+            handlers[signum] = handler
+        def cancel(_duration):
+            handlers[signal.SIGTERM](signal.SIGTERM, None)
+        with patch("pc_activity_logger.main.load_config", return_value=config), patch(
+            "pc_activity_logger.main.OpenWebUIClient"
+        ) as create, patch("pc_activity_logger.main.signal.signal", side_effect=register), patch(
+            "pc_activity_logger.main.time.monotonic", return_value=1000
+        ), patch("pc_activity_logger.main.time.sleep", side_effect=cancel) as sleep, patch(
+            "pc_activity_logger.main.run_once"
+        ) as capture:
+            self.assertEqual(main(["--background"]), 0)
+        sleep.assert_called_once()
+        capture.assert_not_called()
+        create.return_value.close.assert_called_once()
+
+    def test_cli_once_closes_client_after_capture_failure(self) -> None:
+        config = Config(OpenWebUIConfig("http://localhost/api", "synthetic", "model"),
+                        CaptureConfig(), StorageConfig(), NotesConfig())
+        with patch("pc_activity_logger.main.load_config", return_value=config), patch(
+            "pc_activity_logger.main.OpenWebUIClient"
+        ) as create, patch("pc_activity_logger.main.run_once", side_effect=RuntimeError("synthetic")), self.assertLogs(
+            "pc_activity_logger", level="ERROR"
+        ):
+            self.assertEqual(main(["--once"]), 1)
+        create.return_value.close.assert_called_once()
+
     def test_failure_paths_preserve_retry_state_and_local_records(self) -> None:
-        for failure in ("upload", "analysis", "storage", "delete", "note"):
+        for failure in ("upload", "analysis", "storage", "delete", "note", "markdown", "markdown_disabled"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
                 data_dir = Path(temporary)
                 config = Config(
                     OpenWebUIConfig("http://localhost/api", "test", "model"),
                     CaptureConfig(idle_threshold_sec=0, skip_same_screen=False),
-                    StorageConfig(data_dir), NotesConfig(enabled=True),
+                    StorageConfig(data_dir, markdown_enabled=failure != "markdown_disabled"),
+                    NotesConfig(enabled=True),
                 )
                 window = ActiveWindow(0, "synthetic", "test.exe", {
                     "left": 0, "top": 0, "width": 100, "height": 100,
@@ -53,6 +86,9 @@ class MainTests(unittest.TestCase):
                     if failure == "storage":
                         stack.enter_context(patch("pc_activity_logger.main.append_activity",
                                                   side_effect=RuntimeError("storage")))
+                    if failure == "markdown":
+                        stack.enter_context(patch("pc_activity_logger.main.write_activity_markdown",
+                                                  side_effect=OSError("markdown")))
                     with self.assertLogs("pc_activity_logger", level="INFO"):
                         if failure in ("upload", "analysis", "storage"):
                             with self.assertRaisesRegex(RuntimeError, failure):
@@ -72,6 +108,12 @@ class MainTests(unittest.TestCase):
                     records = list(data_dir.rglob("activity.jsonl"))
                     self.assertEqual(len(records), 1)
                     self.assertIn('"confidence":0.8', records[0].read_text(encoding="utf-8"))
+                    markdown_paths = list((data_dir / "obsidian" / "PC Activity Logger" / "Records").rglob("*.md"))
+                    if failure in ("markdown", "markdown_disabled"):
+                        self.assertEqual(markdown_paths, [])
+                    else:
+                        self.assertEqual(len(markdown_paths), 1)
+                        self.assertIn("確認", markdown_paths[0].read_text(encoding="utf-8"))
                     client.append_daily_note.assert_called_once()
 
     def test_skips_excluded_app_before_screenshot(self) -> None:

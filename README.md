@@ -16,6 +16,8 @@ Windowsの前面ウィンドウを定期的に撮影し、OpenWebUI経由でVisi
 - OpenWebUI Chat Completions APIによるVision解析
 - 固定JSONスキーマによる応答検証と、不正応答時の1回リトライ
 - 日付別`activity.jsonl`への追記
+- 1記録ごとのObsidian対応Markdown保存（プロパティ・重要語タグ・関連ノート）
+- GUI・CLIからの過去履歴の一括Markdown書き出し
 - OpenWebUIの日別NoteへのMarkdown追記
 - 解析の成否にかかわらないOpenWebUI一時ファイル削除
 - キーボード・マウスのIdle時間によるスキップ
@@ -24,6 +26,7 @@ Windowsの前面ウィンドウを定期的に撮影し、OpenWebUI経由でVisi
 - アプリ名・ウィンドウタイトルによる撮影前の除外
 - Windows GUIからの設定、接続テスト、記録開始・停止
 - システムトレイ常駐とログオン時の自動起動
+- 撮影間隔とは独立した、自動起動後の待機時間設定（分単位）
 - Windows Credential ManagerへのAPIキー保存
 - GUIからの解析用システムプロンプト編集と既定値復元
 - PyInstallerによるポータブルEXE生成
@@ -40,6 +43,7 @@ Windows
   ├─ file_idを使ってVisionモデルへ解析依頼
   ├─ activity.jsonlへ保存
   ├─ OpenWebUI側の一時画像を削除
+  ├─ Obsidian Markdownと関連ノートを保存
   └─ OpenWebUI Noteへ追記
 ```
 
@@ -121,7 +125,7 @@ APIキーは`config.yaml`へ書き込まず、現在のWindowsユーザーのCre
 
 GUIの「Windowsログオン時に自動起動」を有効にして設定を保存すると、現在のユーザーのタスクスケジューラへ登録されます。管理者権限は要求しませんが、組織のポリシーでタスク登録が禁止されている場合は利用できません。
 
-自動起動時はウィンドウを表示せずトレイへ常駐し、撮影間隔分（既定180秒）待ってから最初の記録を開始します。これにより、ログオン直後のデスクトップ準備中には解析を実行しません。GUIで手動の「開始」を押した場合は即時実行します。ログオフまたはシャットダウン時にはWindowsによって終了されます。
+自動起動時はウィンドウを表示せずトレイへ常駐し、「自動起動後の待機」（既定3分）を待ってから最初の記録を開始します。撮影間隔とは独立して設定でき、`0`分で即時実行します。PCの電源投入時刻ではなく、Windowsログオン後にアプリが起動した時点からの待機です。GUIで手動の「開始」を押した場合は即時実行します。ログオフまたはシャットダウン時にはWindowsによって終了されます。
 
 ### Windows EXEをビルド
 
@@ -155,6 +159,7 @@ openwebui:
 
 capture:
   interval_sec: 180
+  startup_delay_min: 3
   jpeg_quality: 80
   idle_threshold_sec: 300
   skip_same_screen: true
@@ -168,6 +173,9 @@ capture:
 
 storage:
   data_dir: "data"
+  markdown_enabled: true
+  # 既存のObsidian Vaultへ保存する場合は、そのルートフォルダーを指定
+  # obsidian_vault: "C:/Users/USER/Documents/MyVault"
 
 notes:
   enabled: true
@@ -198,6 +206,7 @@ GUI版では「システムプロンプト」タブから解析指示を編集�
 | 項目 | 内容 |
 |---|---|
 | `interval_sec` | 撮影周期。`180`は3分間隔 |
+| `startup_delay_min` | 自動起動後、最初の記録まで待つ分数。既定`3`、`0`で即時。手動開始・単発実行には適用しない |
 | `jpeg_quality` | JPEG品質（1～95） |
 | `idle_threshold_sec` | 最後の入力からスキップを開始する秒数。`0`で無効 |
 | `skip_same_screen` | 前回とほぼ同じ画面の解析を省略するか |
@@ -220,6 +229,35 @@ GUI版では「開いているWindowから選択」を押すと、現在表示�
 ### Note設定
 
 `notes.enabled: true`の場合、OpenWebUIに`PC作業記録 YYYY-MM-DD`という日別Noteを作成し、解析結果を追記します。Note更新に失敗しても、ローカルのJSONLは保持されます。
+
+### Markdown・Obsidian設定
+
+| 項目 | 内容 |
+|---|---|
+| `storage.markdown_enabled` | 記録ごとのMarkdown自動保存。既定`true`。JSONLの保存とは独立 |
+| `storage.obsidian_vault` | Obsidian Vaultのルートフォルダー。省略時は`data_dir/obsidian`。相対パスは設定ファイルの場所が基準 |
+
+GUIでは「記録ごとのObsidian Markdownも保存」を有効にし、「Obsidian Vault保存先」を選んで設定を保存します。既存のVaultを選ぶ場合はVault内のサブフォルダーではなく、Vaultのルートを指定してください。生成ノートはその下の`PC Activity Logger/`に保存されます。
+
+画像のVision解析で重要な技術・概念・製品名を最大8個の`keywords`として取得し、JSONLにも保存します。各記録には、Obsidianの[YAMLプロパティ](https://help.obsidian.md/properties)、[タグ](https://help.obsidian.md/tags)、`[[内部リンク]]`を含めます。重要語・プロジェクト・アプリ・カテゴリ・日付の関連ノートも作成するため、同じ対象を扱う記録が[内部リンク](https://help.obsidian.md/links)でつながります。大文字・小文字や全角・半角の表記はまとめますが、「AI」と「人工知能」のような同義語は自動統合しません。
+
+APIキーやOpenWebUIへの接続なしで過去履歴も変換できます。GUIの「履歴」タブで「JSONLを選んでObsidianへ書き出す」、または「保存先の全履歴をObsidianへ書き出す」を押して、保存先Vaultを選びます。CLIでは次のコマンドを使います。
+
+```powershell
+# 1日分の履歴を変換
+.\.venv\Scripts\python.exe -m pc_activity_logger.export `
+  ".\data\2026-10-13\activity.jsonl" --vault "C:\Users\USER\Documents\MyVault"
+
+# 保存先の全日分を変換
+.\.venv\Scripts\python.exe -m pc_activity_logger.export `
+  ".\data" --vault "C:\Users\USER\Documents\MyVault"
+```
+
+初めて使う場合は既定の`data/obsidian`フォルダーをObsidianでVaultとして開き、「グラフビュー」を表示します。既存Vaultを指定した場合は、そのVaultのグラフビューから`PC Activity Logger/`のノートを確認できます。重要語のノートに自分の説明や既存の知識ノートへのリンクを追記すると、作業履歴と知識を結び付けられます。
+
+再書き出しでは同じ記録を重複作成せず、既存の記録ノートと関連ノートを上書きしません。手動の追記を保持するため、JSONLを後から編集しても既存ノートの本文・タグは更新されません。`keywords`がない過去履歴は、画像を再解析せず日付・プロジェクト・アプリ・カテゴリで関連付けます。画像はVaultへ複製・埋め込みせず、本文に`data_dir`からの相対保存パスを記載します。
+
+自動Markdown保存に失敗してもJSONLとOpenWebUI Noteへの処理を継続します。失敗した記録は、保存先を確認した後に「全履歴を書き出す」で補完できます。書き出し中にJSONLの書き込みと重なって末尾が不完全だった場合も、記録が完了してから再実行してください。
 
 ## 実行方法
 
@@ -273,6 +311,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\register-task.ps1
 
 タスク名は`PC Activity Logger`です。現在のユーザーが次回ログオンしたとき、`.venv\Scripts\pythonw.exe`で画面を表示せずに起動します。既に同名タスクがある場合は現在の設定で更新します。
 
+CLI版も`--background`で起動し、`capture.startup_delay_min`だけ待ってから記録します。以前に登録したCLIタスクへ待機設定を適用するには、この登録スクリプトを再実行してください。
+
 登録直後にも起動する場合：
 
 ```powershell
@@ -315,7 +355,7 @@ PowerShellの実行が許可されていない環境では、タスクから`.ve
 
 ```text
 プログラム: C:\path\to\pc-activity-logger\.venv\Scripts\pythonw.exe
-引数: -m pc_activity_logger.main --config "C:\path\to\pc-activity-logger\config.yaml"
+引数: -m pc_activity_logger.main --background --config "C:\path\to\pc-activity-logger\config.yaml"
 開始: C:\path\to\pc-activity-logger
 ```
 
@@ -323,21 +363,32 @@ PowerShellの実行が許可されていない環境では、タスクから`.ve
 
 ```text
 data/
-└─ 2026-08-21/
-   ├─ screenshots/
-   │  ├─ 101500_123456_active.jpg
-   │  └─ 101500_123456_monitor.jpg
-   └─ activity.jsonl
+├─ 2026-08-21/
+│  ├─ screenshots/
+│  │  ├─ 101500_123456_active.jpg
+│  │  └─ 101500_123456_monitor.jpg
+│  └─ activity.jsonl
+└─ obsidian/                         # Obsidian Vaultの既定保存先
+   └─ PC Activity Logger/
+      ├─ Records/2026-08-21/         # 1記録につき1つのmd
+      │  └─ 20260821-101500-123456-<識別子>.md
+      ├─ Topics/                    # 画像から抽出した重要語
+      ├─ Projects/
+      ├─ Apps/
+      ├─ Categories/
+      └─ Days/
 ```
 
 - `*_active.jpg`: AI解析に使用した前面ウィンドウ画像
 - `*_monitor.jpg`: 前面ウィンドウが存在するモニター全体の画像
 - `activity.jsonl`: 時刻、アプリ、ウィンドウ情報、画像パス、解析結果
+- `Records/.../*.md`: 記録ごとのMarkdown。記録時のタイムゾーンを保持し、タグと関連ノートへリンク
+- `Topics/`等のMarkdown: 共通の重要語・プロジェクト等で記録を結ぶノート
 
 JSONLの例：
 
 ```json
-{"timestamp":"2026-08-21T10:15:00+09:00","app_name":"Code.exe","window_title":"pc-activity-logger - Visual Studio Code","activity":"PC作業記録ツールのIdle判定処理を実装","project":"pc-activity-logger","category":"development","detail":"main.pyとwindows.pyを開き、Windowsの最終入力時刻を使ったスキップ処理を確認している","confidence":0.95}
+{"timestamp":"2026-08-21T10:15:00+09:00","app_name":"Code.exe","window_title":"pc-activity-logger - Visual Studio Code","activity":"PC作業記録ツールのIdle判定処理を実装","project":"pc-activity-logger","category":"development","detail":"main.pyとwindows.pyを開き、Windowsの最終入力時刻を使ったスキップ処理を確認している","confidence":0.95,"keywords":["Python","Idle判定","Windows API"]}
 ```
 
 ## テスト
@@ -395,6 +446,8 @@ GitHub ActionsのCIはpushとpull requestで起動し、Linux（Ubuntu）とWind
 - OpenWebUIに残った古い一時ファイルの起動時クリーンアップ
 - 日報・週報の自動生成
 - プロジェクトへの確定的な紐付け
+- OpenWebUI Noteの更新失敗時の再送
+- 小さいウィンドウでモニター全体に切り替わる撮影処理の見直し
 
 ## ライセンス
 
