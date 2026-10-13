@@ -26,6 +26,7 @@ storage:
   markdown_enabled: true
   retention_days: 14
   save_monitor_screenshot: false
+  reports_enabled: false
   # Existing Obsidian vault root; omit to use data_dir/obsidian.
   # obsidian_vault: "C:/Users/USER/Documents/MyVault"
 

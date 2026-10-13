@@ -6,17 +6,19 @@ import math
 import sys
 import threading
 import time
+from datetime import date
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QThread, QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QDate, QThread, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
+    QDateEdit,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -47,11 +49,12 @@ from .gui_settings import (
     save_values,
     stored_api_key,
 )
-from .main import CaptureState, CycleResult, run_once
+from .main import CaptureState, CycleResult, refresh_daily_report, run_once
 from .history import record_timestamp
 from .markdown import export_markdown
 from .openwebui import OpenWebUIClient
 from .prompts import DEFAULT_ANALYSIS_SYSTEM_PROMPT
+from .report import generate_daily_report
 from .windows import OpenWindow, enable_dpi_awareness, get_open_windows
 from . import scheduler
 
@@ -134,6 +137,7 @@ class ActivityWorker(QThread):
                 if self._stop_event.wait(remaining):
                     break
         finally:
+            refresh_daily_report(active_config or self.current_config(), state, force=True)
             if client is not None:
                 client.close()
         LOGGER.info("GUI worker stopped")
@@ -173,6 +177,22 @@ class ExportWorker(QThread):
         try:
             result = export_markdown(self.source, self.destination)
             self.succeeded.emit(str(self.destination), result.exported, result.skipped)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class ReportWorker(QThread):
+    succeeded = Signal(str, int, int, float)
+    failed = Signal(str)
+
+    def __init__(self, source: Path, day: date, vault: Path, interval_sec: int) -> None:
+        super().__init__()
+        self.source, self.day, self.vault, self.interval_sec = source, day, vault, interval_sec
+
+    def run(self) -> None:
+        try:
+            result = generate_daily_report(self.source, self.day, self.vault, self.interval_sec)
+            self.succeeded.emit(str(result.path), result.records, result.skipped, result.total_seconds)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -255,6 +275,7 @@ class MainWindow(QMainWindow):
         self.worker: ActivityWorker | None = None
         self.connection_worker: ConnectionWorker | None = None
         self.export_worker: ExportWorker | None = None
+        self.report_worker: ReportWorker | None = None
         self._next_capture_deadline: float | None = None
         self.really_quit = False
         self.setWindowTitle("PC Activity Logger")
@@ -343,6 +364,7 @@ class MainWindow(QMainWindow):
         self.markdown_enabled = QCheckBox("記録ごとのObsidian Markdownも保存")
         self.retention_days = self._spin(0, 3650)
         self.save_monitor_screenshot = QCheckBox("モニター全体の画像も保存（負荷が増えます）")
+        self.reports_enabled = QCheckBox("日報サマリーを自動生成（最大1時間ごと）")
         self.obsidian_vault = QLineEdit()
         browse_vault = QPushButton("参照")
         browse_vault.clicked.connect(self.browse_obsidian_vault)
@@ -361,7 +383,8 @@ class MainWindow(QMainWindow):
         storage_grid.addWidget(QLabel("画像の保持日数（0で無期限）"), 5, 0)
         storage_grid.addWidget(self.retention_days, 5, 1, 1, 2)
         storage_grid.addWidget(self.save_monitor_screenshot, 6, 1, 1, 2)
-        storage_grid.addWidget(self.autostart, 7, 1, 1, 2)
+        storage_grid.addWidget(self.reports_enabled, 7, 1, 1, 2)
+        storage_grid.addWidget(self.autostart, 8, 1, 1, 2)
 
         buttons = QHBoxLayout()
         self.test_button = QPushButton("接続テスト")
@@ -438,6 +461,19 @@ class MainWindow(QMainWindow):
         self.export_status = QLabel("")
         self.export_status.setWordWrap(True)
         history_layout.addWidget(self.export_status)
+        report_row = QHBoxLayout()
+        self.report_date = QDateEdit(QDate.currentDate())
+        self.report_date.setCalendarPopup(True)
+        self.report_date.setDisplayFormat("yyyy-MM-dd")
+        self.report_button = QPushButton("日報サマリーを生成")
+        self.report_button.clicked.connect(self.generate_report)
+        report_row.addWidget(QLabel("日報の日付"))
+        report_row.addWidget(self.report_date)
+        report_row.addWidget(self.report_button)
+        history_layout.addLayout(report_row)
+        self.report_status = QLabel("日報の時間は定期撮影からの推定値です。")
+        self.report_status.setWordWrap(True)
+        history_layout.addWidget(self.report_status)
         history_layout.addStretch()
 
         log_page = QWidget()
@@ -551,6 +587,7 @@ class MainWindow(QMainWindow):
             self.markdown_enabled.setChecked(bool(values["markdown_enabled"]))
             self.retention_days.setValue(max(0, int(values["retention_days"])))
             self.save_monitor_screenshot.setChecked(bool(values["save_monitor_screenshot"]))
+            self.reports_enabled.setChecked(bool(values["reports_enabled"]))
             self.obsidian_vault.setText(str(values["obsidian_vault"]))
             self.notes_enabled.setChecked(bool(values["notes_enabled"]))
             self.notes_title_prefix.setText(str(values["notes_title_prefix"]))
@@ -584,6 +621,7 @@ class MainWindow(QMainWindow):
             "markdown_enabled": self.markdown_enabled.isChecked(),
             "retention_days": self.retention_days.value(),
             "save_monitor_screenshot": self.save_monitor_screenshot.isChecked(),
+            "reports_enabled": self.reports_enabled.isChecked(),
             "obsidian_vault": self.obsidian_vault.text(),
             "notes_enabled": self.notes_enabled.isChecked(),
             "notes_title_prefix": self.notes_title_prefix.text(),
@@ -774,6 +812,28 @@ class MainWindow(QMainWindow):
         self.export_status.setText("書き出しに失敗しました。")
         QMessageBox.critical(self, "履歴の書き出しエラー", message)
 
+    def generate_report(self) -> None:
+        if self.report_worker and self.report_worker.isRunning():
+            return
+        vault = QFileDialog.getExistingDirectory(self, "日報を保存するVaultを選択", self.obsidian_vault.text())
+        if not vault:
+            return
+        day = date.fromisoformat(self.report_date.date().toString("yyyy-MM-dd"))
+        self.report_worker = ReportWorker(Path(self.data_dir.text()), day, Path(vault), self.interval_sec.value())
+        self.report_worker.succeeded.connect(self._report_succeeded)
+        self.report_worker.failed.connect(self._report_failed)
+        self.report_worker.finished.connect(lambda: self.report_button.setEnabled(True))
+        self.report_button.setEnabled(False)
+        self.report_status.setText("日報を生成しています…")
+        self.report_worker.start()
+
+    def _report_succeeded(self, path: str, records: int, skipped: int, seconds: float) -> None:
+        self.report_status.setText(f"{records}件を集計しました。推定{seconds / 60:.1f}分、破損行のスキップ{skipped}件\n{path}")
+
+    def _report_failed(self, message: str) -> None:
+        self.report_status.setText("日報の生成に失敗しました。")
+        QMessageBox.critical(self, "日報生成エラー", message)
+
     def restore_default_system_prompt(self) -> None:
         self.system_prompt.setPlainText(DEFAULT_ANALYSIS_SYSTEM_PROMPT)
         self.status.setText("既定のプロンプトへ戻しました。設定を保存してください")
@@ -830,7 +890,7 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait()
-        for worker in (self.connection_worker, self.export_worker):
+        for worker in (self.connection_worker, self.export_worker, self.report_worker):
             if worker and worker.isRunning():
                 worker.wait()
         QApplication.instance().quit()

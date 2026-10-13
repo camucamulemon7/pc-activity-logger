@@ -182,6 +182,7 @@ storage:
   markdown_enabled: true
   retention_days: 14
   save_monitor_screenshot: false
+  reports_enabled: false
   # 既存のObsidian Vaultへ保存する場合は、そのルートフォルダーを指定
   # obsidian_vault: "C:/Users/USER/Documents/MyVault"
 
@@ -254,8 +255,9 @@ GUI版では「開いているWindowから選択」を押すと、現在表示�
 | `storage.obsidian_vault` | Obsidian Vaultのルートフォルダー。省略時は`data_dir/obsidian`。相対パスは設定ファイルの場所が基準 |
 | `storage.retention_days` | 当日を含む画像の保持日数。既定`14`。`0`または負数で無期限保持（GUIでは`0`） |
 | `storage.save_monitor_screenshot` | モニター全体画像も保存するか。既定`false`は前面領域だけを撮影し、圧縮・保存負荷を削減 |
+| `storage.reports_enabled` | 日報の自動生成。既定`false`で追加集計を行わず、手動生成は常に利用可能 |
 
-画像の整理は記録開始時と日付が変わった後の周期で行います。日付フォルダーの` screenshots/`内にある、本ツールの命名形式の`active`・`monitor` JPEGだけを削除し、JSONL・Markdown・その他のファイルは残します。シンボリックリンクや別の場所へ向いたディレクトリは対象にしません。
+画像の整理は記録開始時と日付が変わった後の周期で行います。日付フォルダーの`screenshots/`内にある、本ツールの命名形式の`active`・`monitor` JPEGだけを削除し、JSONL・Markdown・その他のファイルは残します。シンボリックリンクや別の場所へ向いたディレクトリは対象にしません。
 
 GUIでは「記録ごとのObsidian Markdownも保存」を有効にし、「Obsidian Vault保存先」を選んで設定を保存します。既存のVaultを選ぶ場合はVault内のサブフォルダーではなく、Vaultのルートを指定してください。生成ノートはその下の`PC Activity Logger/`に保存されます。
 
@@ -278,6 +280,21 @@ APIキーやOpenWebUIへの接続なしで過去履歴も変換できます。GU
 再書き出しでは同じ記録を重複作成せず、既存の記録ノートと関連ノートを上書きしません。手動の追記を保持するため、JSONLを後から編集しても既存ノートの本文・タグは更新されません。`keywords`がない過去履歴は、画像を再解析せず日付・プロジェクト・アプリ・カテゴリで関連付けます。画像はVaultへ複製・埋め込みせず、本文に`data_dir`からの相対保存パスを記載します。
 
 自動Markdown保存に失敗してもJSONLとOpenWebUI Noteへの処理を継続します。失敗した記録は、保存先を確認した後に「全履歴を書き出す」で補完できます。一括書き出しは破損した行をスキップして継続し、成功件数・スキップ件数をGUIとCLIに表示します。行番号と原因はログで確認できます。破損時に処理を中止する場合はCLIで`--strict`を指定してください。書き出し中にJSONLの書き込みと重なって末尾が不完全だった場合は、記録が完了してから再実行してください。内部リンクは拡張子なしの標準形式です。
+
+### 日報サマリー
+
+「履歴」タブの日付を選び、「日報サマリーを生成」でカテゴリ・アプリ・プロジェクト別の推定時間と割合、同一作業をまとめたタイムラインを生成できます。APIキーは不要です。CLIからも生成できます。
+
+```powershell
+.\.venv\Scripts\python.exe -m pc_activity_logger.report `
+  --date 2026-10-14 --data-dir ".\data" --vault "C:\Users\USER\Documents\MyVault"
+```
+
+`--vault`省略時は`data_dir/obsidian`を使用します。撮影間隔を保存していない旧履歴の推定上限は`--interval-sec`で指定でき、既定180秒です。破損行はスキップし、`--strict`で中止できます。日報は`PC Activity Logger/Reports/Daily-Report-YYYY-MM-DD.md`に保存し、日付ノートにリンクします。
+
+時間は実測ではなく定期撮影からの推定です。1記録の時間を「次の記録まで」「その記録の撮影間隔」「当日の残り時間」の最小値とし、Idle・スリープ・同一画面スキップ等の長い未記録区間を作業時間として埋めません。最終記録も最大1撮影間隔で推定するため、勤務時間・請求時間の確定値には使えません。
+
+自動生成を有効にすると、当日の日報を最初の成功記録時、以降最大1時間ごと、正常停止時に更新します。開始時・日付変更時には、履歴があれば前日の日報を更新します。常駐負荷を抑えるため既定では無効です。日報は再生成で更新するファイルなので、追記は個別記録・日付ノートへ保存してください。同じ日報パスに本ツールが生成していないノートがあれば上書きしません。
 
 ## 実行方法
 
@@ -393,6 +410,7 @@ data/
       ├─ Records/2026-08-21/         # 1記録につき1つのmd
       │  └─ 20260821-101500-123456-<識別子>.md
       ├─ Topics/                    # 画像から抽出した重要語
+      ├─ Reports/                   # 日報サマリー
       ├─ Projects/
       ├─ Apps/
       ├─ Categories/
@@ -470,7 +488,7 @@ GitHub ActionsのCIはpushとpull requestで起動し、Linux（Ubuntu）とWind
 
 ## 現在未実装の機能
 
-- 日報・週報の自動生成
+- 週報の自動生成
 - プロジェクトへの確定的な紐付け
 - OpenWebUI Noteの更新失敗時の再送
 

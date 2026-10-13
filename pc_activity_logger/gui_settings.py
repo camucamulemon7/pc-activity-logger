@@ -52,6 +52,7 @@ def default_values() -> dict[str, Any]:
         "markdown_enabled": True,
         "retention_days": 14,
         "save_monitor_screenshot": False,
+        "reports_enabled": False,
         "obsidian_vault": str(app_dir / "data" / "obsidian"),
         "notes_enabled": True,
         "notes_title_prefix": "PC作業記録",
@@ -100,6 +101,8 @@ def read_values(path: Path) -> dict[str, Any]:
         values["retention_days"] = storage["retention_days"]
     if "save_monitor_screenshot" in storage:
         values["save_monitor_screenshot"] = storage["save_monitor_screenshot"]
+    if "reports_enabled" in storage:
+        values["reports_enabled"] = storage["reports_enabled"]
     vault = Path(str(storage.get("obsidian_vault") or Path(values["data_dir"]) / "obsidian"))
     if not vault.is_absolute():
         vault = path.resolve().parent / vault
@@ -148,6 +151,7 @@ def save_values(path: Path, values: dict[str, Any], api_key: str) -> Config:
             "markdown_enabled": bool(values.get("markdown_enabled", True)),
             "retention_days": int(values.get("retention_days", 14)),
             "save_monitor_screenshot": bool(values.get("save_monitor_screenshot", False)),
+            "reports_enabled": bool(values.get("reports_enabled", False)),
             "obsidian_vault": str(vault),
         },
         "notes": {

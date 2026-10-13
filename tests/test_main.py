@@ -19,6 +19,11 @@ from pc_activity_logger.windows import ActiveWindow
 
 
 class MainTests(unittest.TestCase):
+    def setUp(self) -> None:
+        cleanup = patch("pc_activity_logger.main.cleanup_screenshots", return_value=0)
+        cleanup.start()
+        self.addCleanup(cleanup.stop)
+
     def test_foreground_only_mode_captures_and_saves_one_image(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

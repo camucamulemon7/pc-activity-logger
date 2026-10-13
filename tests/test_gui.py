@@ -6,10 +6,23 @@ from unittest.mock import Mock, patch
 
 from pc_activity_logger.markdown import ExportResult
 from pc_activity_logger.main import CycleResult
-from pc_activity_logger.gui import ActivityWorker, ConnectionWorker, ExportWorker, MainWindow
+from pc_activity_logger.gui import ActivityWorker, ConnectionWorker, ExportWorker, MainWindow, ReportWorker
+from pc_activity_logger.report import ReportResult
+from datetime import date
 
 
 class ActivityWorkerTests(unittest.TestCase):
+    def test_report_worker_emits_summary_and_reports_failure(self) -> None:
+        for failure in (False, True):
+            worker = ReportWorker(Path("data"), date(2026, 10, 14), Path("vault"), 300)
+            values = []
+            worker.succeeded.connect(lambda *result: values.append(result))
+            worker.failed.connect(values.append)
+            with patch("pc_activity_logger.gui.generate_daily_report", return_value=ReportResult(Path("report.md"), 2, 1, 600),
+                       side_effect=OSError("missing history") if failure else None):
+                worker.run()
+            self.assertEqual(values, ["missing history"] if failure else [("report.md", 2, 1, 600.0)])
+
     def test_low_load_settings_reduce_capture_frequency_and_disable_full_monitor_saves(self) -> None:
         window = Mock()
         MainWindow.apply_low_load_settings(window)

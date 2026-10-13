@@ -6,7 +6,7 @@ import signal
 import sys
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ from .capture import UnsafeCaptureError, active_window_crop_box, capture_monitor
 from .config import Config, load_config
 from .markdown import write_activity_markdown
 from .openwebui import OpenWebUIClient
+from .report import generate_daily_report
 from .storage import append_activity, cleanup_screenshots, save_screenshot
 from .windows import (
     get_active_window,
@@ -31,12 +32,33 @@ class CaptureState:
     last_analyzed_hash: int | None = None
     last_analyzed_at: float | None = None
     maintenance_date: date | None = None
+    last_report_at: float | None = None
+    last_report_date: date | None = None
 
 
 @dataclass(frozen=True)
 class CycleResult:
     reason: str
     record: dict[str, Any] | None = None
+
+
+def refresh_daily_report(config: Config, state: CaptureState, *, force: bool = False, day: date | None = None) -> None:
+    if not isinstance(config, Config) or not config.storage.reports_enabled:
+        return
+    report_day = day or datetime.now().astimezone().date()
+    now = time.monotonic()
+    if (not force and state.last_report_date == report_day and state.last_report_at is not None
+            and now - state.last_report_at < 3600):
+        return
+    source = config.storage.data_dir / report_day.isoformat() / "activity.jsonl"
+    if not source.is_file():
+        return
+    try:
+        vault = config.storage.obsidian_vault or config.storage.data_dir / "obsidian"
+        generate_daily_report(source, report_day, vault, config.capture.interval_sec)
+        state.last_report_at, state.last_report_date = now, report_day
+    except (OSError, ValueError, OverflowError):
+        LOGGER.exception("Daily report generation failed; recording will continue")
 
 
 def perform_maintenance(config: Config, state: CaptureState, client: OpenWebUIClient) -> None:
@@ -57,6 +79,7 @@ def perform_maintenance(config: Config, state: CaptureState, client: OpenWebUICl
         except Exception:
             LOGGER.exception("OpenWebUI temporary-file cleanup failed; recording will continue")
     state.maintenance_date = today
+    refresh_daily_report(config, state, force=True, day=today - timedelta(days=1))
 
 
 def _contains_any(value: str, patterns: tuple[str, ...]) -> bool:
@@ -198,6 +221,7 @@ def run_once(
         analysis.activity,
         analysis.confidence,
     )
+    refresh_daily_report(config, state or CaptureState(), day=captured_at.date())
     return CycleResult("recorded", record)
 
 
@@ -265,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
             remaining = max(0.0, config.capture.interval_sec - (time.monotonic() - started))
             wait_until(time.monotonic() + remaining)
     finally:
+        refresh_daily_report(config, state, force=True)
         client.close()
     LOGGER.info("Stopped")
     return 0
