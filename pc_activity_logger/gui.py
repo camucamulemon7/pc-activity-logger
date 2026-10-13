@@ -149,7 +149,7 @@ class ConnectionWorker(QThread):
 
 
 class ExportWorker(QThread):
-    succeeded = Signal(str, int)
+    succeeded = Signal(str, int, int)
     failed = Signal(str)
 
     def __init__(self, source: Path, destination: Path) -> None:
@@ -159,8 +159,8 @@ class ExportWorker(QThread):
 
     def run(self) -> None:
         try:
-            count = export_markdown(self.source, self.destination)
-            self.succeeded.emit(str(self.destination), count)
+            result = export_markdown(self.source, self.destination)
+            self.succeeded.emit(str(self.destination), result.exported, result.skipped)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -662,8 +662,8 @@ class MainWindow(QMainWindow):
         self.export_button.setEnabled(True)
         self.export_all_button.setEnabled(True)
 
-    def _export_succeeded(self, destination: str, count: int) -> None:
-        self.export_status.setText(f"{count}件の履歴を書き出しました。\n{destination}")
+    def _export_succeeded(self, destination: str, count: int, skipped: int) -> None:
+        self.export_status.setText(f"{count}件を書き出しました。破損レコードのスキップ: {skipped}件\n{destination}")
 
     def _export_failed(self, message: str) -> None:
         self.export_status.setText("書き出しに失敗しました。")

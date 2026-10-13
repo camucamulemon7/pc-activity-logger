@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from pc_activity_logger.markdown import ExportResult
 from pc_activity_logger.gui import ActivityWorker, ConnectionWorker, ExportWorker, MainWindow
 
 
@@ -23,12 +24,12 @@ class ActivityWorkerTests(unittest.TestCase):
             with self.subTest(failure=failure):
                 worker = ExportWorker(Path("activity.jsonl"), Path("vault"))
                 signals = []
-                worker.succeeded.connect(lambda path, count: signals.append((path, count)))
+                worker.succeeded.connect(lambda path, count, skipped: signals.append((path, count, skipped)))
                 worker.failed.connect(lambda message: signals.append(message))
-                with patch("pc_activity_logger.gui.export_markdown", return_value=2,
+                with patch("pc_activity_logger.gui.export_markdown", return_value=ExportResult(2, 1),
                            side_effect=ValueError("line 2: invalid history") if failure else None):
                     worker.run()
-                self.assertEqual(signals, ["line 2: invalid history"] if failure else [("vault", 2)])
+                self.assertEqual(signals, ["line 2: invalid history"] if failure else [("vault", 2, 1)])
 
     def test_gui_history_export_does_not_require_saved_settings_or_api_key(self) -> None:
         for all_history in (False, True):
